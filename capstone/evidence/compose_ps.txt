@@ -1,0 +1,5 @@
+NAME                              IMAGE               COMMAND                SERVICE                           CREATED        STATUS        PORTS
+capability_1_bi_apis              benchmark_environ   "/app/entrypoint.sh"   capability_1_bi_apis              28 hours ago   Up 28 hours   8000-8001/tcp
+capability_2_dashboard_apis       benchmark_environ   "/app/entrypoint.sh"   capability_2_dashboard_apis       28 hours ago   Up 28 hours   8000-8001/tcp
+capability_3_multihop_reasoning   benchmark_environ   "/app/entrypoint.sh"   capability_3_multihop_reasoning   28 hours ago   Up 28 hours   8000-8001/tcp
+capability_4_multiturn            benchmark_environ   "/app/entrypoint.sh"   capability_4_multiturn            27 hours ago   Up 27 hours   8000-8001/tcp

@@ -422,6 +422,14 @@ def create_llm(
         # the allow-list [e.g. GCP/gemini-2.0-flash] and the check for an
         # existing provider (GCP isn't an existing provider)
         params["custom_llm_provider"] = "openai"
+        # Optional: extra JSON merged into the request body (e.g. OpenRouter
+        # provider routing). Example:
+        #   LITELLM_EXTRA_BODY='{"provider":{"order":["crusoe/bf16","deepinfra/bf16"],
+        #                        "allow_fallbacks":true,"require_parameters":true}}'
+        extra_body = os.environ.get("LITELLM_EXTRA_BODY")
+        if extra_body:
+            import json as _json
+            params["model_kwargs"] = {"extra_body": _json.loads(extra_body)}
 
         return ChatLiteLLM(**params)
 

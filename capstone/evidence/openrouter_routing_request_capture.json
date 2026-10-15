@@ -1,0 +1,21 @@
+{
+  "path": "/api/v1/chat/completions",
+  "body": {
+    "messages": [
+      {
+        "content": "hi",
+        "role": "user"
+      }
+    ],
+    "model": "openai/gpt-oss-120b",
+    "temperature": 0.0,
+    "provider": {
+      "order": [
+        "crusoe/bf16",
+        "deepinfra/bf16"
+      ],
+      "allow_fallbacks": true,
+      "require_parameters": true
+    }
+  }
+}
