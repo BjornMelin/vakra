@@ -1,0 +1,33 @@
+
+=== 1. Image file checks ===
+  [PASS] /app/m3-rest/app.py
+  [PASS] /app/m3-rest/mcp_server.py
+  [PASS] /app/retrievers/server.py
+  [PASS] /app/retrievers/mcp_server.py
+  [PASS] /app/environment/__init__.py
+  [PASS] /app/environment/bpo/__init__.py
+  [PASS] /app/environment/bpo/mcp/server.py
+  [PASS] /app/environment/bpo/api/schemas.py
+  [PASS] /app/environment/bpo/api/candidate_source.py
+  [PASS] /app/environment/bpo/api/skills.py
+  [PASS] /app/environment/bpo/data/candidate_data.parquet
+  [PASS] /app/entrypoint.sh
+
+=== 2. M3 REST FastAPI health (port 8000) ===
+  Starting container benchmark_smoke_289182 ...
+  Waiting up to 60s for M3 REST to be ready ...
+  [PASS] M3 REST /openapi.json responded
+  [PASS] M3 REST OpenAPI spec has 7088 route(s)
+
+=== 3. BPO MCP server (stdio handshake) ===
+  [PASS] BPO MCP server returned a valid JSON-RPC response
+
+=== 4. M3 REST MCP server (stdio handshake) ===
+  [PASS] M3 REST MCP server returned a valid JSON-RPC response
+
+=== Summary ===
+
+  Passed: 16/16
+  Failed: 0/16
+
+All checks passed. Image looks good to push.

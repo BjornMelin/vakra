@@ -1,0 +1,76 @@
+{
+  "schema_version": "0.1.0-draft",
+  "units_metric": "item_units_sold",
+  "model_id": "openai/gpt-oss-120b",
+  "example_trace": {
+    "trace_id": "trace-smoke-001",
+    "model_id": "openai/gpt-oss-120b",
+    "prompt_version": "vakra-rca-v0",
+    "temperature": 0.0,
+    "tool_calls": [
+      {
+        "name": "compare_periods",
+        "arguments": {
+          "store_id": "STORE_EXAMPLE",
+          "period_a": {"start": "2024-01-01", "end": "2024-01-28"},
+          "period_b": {"start": "2024-01-29", "end": "2024-02-25"}
+        },
+        "status": "ok",
+        "result_summary": "period_b units 120 vs period_a units 100 (delta +20)",
+        "latency_ms": 42,
+        "evidence_ids_produced": ["ev-001", "ev-002"]
+      }
+    ],
+    "evidence": [
+      {
+        "evidence_id": "ev-001",
+        "source": {
+          "source_id": "src-pilot-mock",
+          "kind": "tool_call",
+          "table_or_tool": "compare_periods",
+          "query_or_args": {"store_id": "STORE_EXAMPLE", "window": "A"},
+          "revision": "mock-fixture"
+        },
+        "period": {
+          "start": "2024-01-01",
+          "end": "2024-01-28",
+          "store_id": "STORE_EXAMPLE",
+          "complete_daily_sales_coverage": true
+        },
+        "units_metric": "item_units_sold",
+        "value": 100
+      },
+      {
+        "evidence_id": "ev-002",
+        "source": {
+          "source_id": "src-pilot-mock",
+          "kind": "tool_call",
+          "table_or_tool": "compare_periods",
+          "query_or_args": {"store_id": "STORE_EXAMPLE", "window": "B"},
+          "revision": "mock-fixture"
+        },
+        "period": {
+          "start": "2024-01-29",
+          "end": "2024-02-25",
+          "store_id": "STORE_EXAMPLE",
+          "complete_daily_sales_coverage": true
+        },
+        "units_metric": "item_units_sold",
+        "value": 120
+      }
+    ],
+    "claims": [
+      {
+        "claim_id": "cl-001",
+        "kind": "descriptive_delta",
+        "text": "Store STORE_EXAMPLE sold 20 more item units in period B than period A.",
+        "numeric_value": 20.0,
+        "units_metric": "item_units_sold",
+        "evidence_ids": ["ev-001", "ev-002"],
+        "causal": false
+      }
+    ],
+    "token_usage": {"prompt": 0, "completion": 0},
+    "status": "success"
+  }
+}
