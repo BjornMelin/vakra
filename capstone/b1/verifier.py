@@ -49,7 +49,7 @@ Reason = Literal[
 ]
 
 _ABSTAIN = re.compile(
-    r"\b(?:i\s+(?:could\s*not|couldn'?t|cannot|can'?t|was\s+unable\s+to|am\s+unable\s+to|"
+    r"\b(?:i\s+(?:could\s*not|couldn'?t|can\s*not|can'?t|was\s+unable\s+to|am\s+unable\s+to|"
     r"was\s+not\s+able\s+to|do\s+not\s+have|don'?t\s+have)|"
     r"(?:no|not\s+enough)\s+(?:data|results?|records?|information|matching\s+\w+)\s+"
     r"(?:was\s+|were\s+|is\s+|are\s+)?(?:found|available|returned)|"

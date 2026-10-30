@@ -172,6 +172,7 @@ def test_free_text_judge_outcomes():
 
 def test_abstention_accepted_without_judge():
     assert is_abstention("I could not find any matching records.")
+    assert is_abstention("I can not answer.")  # the cap4 gold abstention string
     j = FakeJudge()
     v = verify(vin("I could not find any matching records.", [("t", "[]")]), VerifierConfig(), j)
     assert (v.outcome, v.reason) == ("accept", "abstention") and not j.calls
