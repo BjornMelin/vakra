@@ -4,6 +4,8 @@ Run directory layout (written by capstone/run/run_cut.sh):
 
     $RUN/config.json              run manifest (optional)
     $RUN/cap<C>/<domain>.json     benchmark_runner predictions
+    $RUN/cap<C>/<domain>_trajectory.json   tool outputs + B1 verdicts (optional,
+                                  capstone/trajectories.py)
     $RUN/eval/cap<C>.json         evaluator output
     $RUN/traces/spans-*.jsonl     tracing span copies (optional, VAKRA_TRACE_DIR)
 
@@ -19,6 +21,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+from capstone.trajectories import TRAJECTORY_SUFFIX, is_sidecar, read_trajectories
 
 CAPABILITY_DIRS = {
     1: "capability_1_bi_apis",
@@ -87,10 +91,50 @@ class Item:
     total_tokens: int | None = None
     n_llm_calls: int | None = None
     tool_spans: list[ToolSpan] = field(default_factory=list)
+    # From the trajectory sidecar (tool outputs, B1 verdict)
+    trajectory: dict[str, Any] | None = None
+
+    @property
+    def verification(self) -> dict[str, Any] | None:
+        return (self.trajectory or {}).get("verification")
 
     @property
     def tool_outputs(self) -> list[str]:
+        """Tool outputs the agent saw: sidecar first, else traced spans."""
+        if self.trajectory and self.trajectory.get("tool_calls") is not None:
+            return [str(c.get("result", "")) for c in self.trajectory["tool_calls"]]
         return [t.output for t in self.tool_spans]
+
+    @property
+    def tool_outputs_source(self) -> str | None:
+        """Where ``tool_outputs`` came from: trajectory, spans, or None (not recorded)."""
+        if self.trajectory and self.trajectory.get("tool_calls") is not None:
+            return str(self.trajectory.get("tool_outputs_source") or "trajectory")
+        return "spans" if self.tool_spans else None
+
+    def trajectory_record(self) -> dict[str, Any]:
+        """A trajectory record for B1 (capstone.b1.step.input_from_record).
+
+        Uses the sidecar when present, else rebuilds tool outputs from spans;
+        with neither, ``tool_calls`` is absent so B1 reports insufficient
+        evidence instead of guessing.
+        """
+        if self.trajectory and self.trajectory.get("tool_calls") is not None:
+            rec = dict(self.trajectory)
+            rec["answer"] = self.pred_answer if rec.get("answer") is None else rec["answer"]
+            return rec
+        rec: dict[str, Any] = {
+            "uuid": self.uuid,
+            "domain": self.domain,
+            "query": self.query,
+            "answer": self.pred_answer,
+            "status": self.status or "success",
+            "error": self.error or "",
+        }
+        if self.tool_spans:
+            rec["tool_calls"] = [{"name": t.name, "arguments": t.input, "result": t.output} for t in self.tool_spans]
+            rec["tool_outputs_source"] = "spans"
+        return rec
 
     @property
     def key(self) -> tuple[int, str]:
@@ -164,7 +208,12 @@ def _capability_of(path: Path, data: dict[str, Any] | None = None) -> int | None
     return int(m.group(1)) if m else None
 
 
-def load_run(path: Path, gt_root: Path | None = None) -> Run:
+def load_run(
+    path: Path, gt_root: Path | None = None, tool_outputs_dir: Path | None = None
+) -> Run:
+    """Load a run. ``tool_outputs_dir`` adds trajectory sidecars kept outside
+    the run (e.g. ``python -m capstone.b1 collect`` output, laid out as
+    ``cap<C>/<domain>_trajectory.json``); sidecars inside the run win."""
     path = Path(path)
     manifest_path = path / "config.json"
     manifest = read_json(manifest_path) if manifest_path.exists() else {}
@@ -198,7 +247,7 @@ def load_run(path: Path, gt_root: Path | None = None) -> Run:
     for cap_dir in sorted(path.glob("cap[0-9]")):
         cap = int(cap_dir.name[3:])
         for pred_path in sorted(cap_dir.glob("*.json")):
-            if pred_path.stem.endswith("_tools"):
+            if is_sidecar(pred_path):
                 continue
             records = read_json(pred_path)
             if not isinstance(records, list):
@@ -220,6 +269,7 @@ def load_run(path: Path, gt_root: Path | None = None) -> Run:
                     answer if isinstance(answer, str) else json.dumps(answer)
                 )
                 it.pred_calls = _calls((turn.get("sequence") or {}).get("tool_call"))
+        _attach_trajectories(items, cap, cap_dir, tool_outputs_dir)
 
     if gt_root is not None:
         _attach_ground_truth(items.values(), Path(gt_root))
@@ -228,6 +278,20 @@ def load_run(path: Path, gt_root: Path | None = None) -> Run:
     return Run(
         path=path, run_id=run_id, manifest=manifest, items=ordered, has_spans=has_spans
     )
+
+
+def _attach_trajectories(
+    items: dict[tuple[int, str], Item], cap: int, cap_dir: Path, extra_root: Path | None
+) -> None:
+    dirs = [cap_dir]
+    if extra_root is not None:
+        dirs.insert(0, Path(extra_root) / cap_dir.name)  # run's own sidecars applied last
+    for d in dirs:
+        for side in sorted(d.glob(f"*{TRAJECTORY_SUFFIX}.json")):
+            for uuid, rec in read_trajectories(side).items():
+                it = items.get((cap, uuid))
+                if it is not None and it.has_prediction:
+                    it.trajectory = rec
 
 
 def _attach_ground_truth(items: Iterable[Item], gt_root: Path) -> None:
