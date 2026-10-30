@@ -30,6 +30,8 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+from capstone.trajectories import is_sidecar
+
 MANIFEST_NAME = "config.json"
 SCHEMA_VERSION = 1
 
@@ -240,6 +242,9 @@ def build_start_manifest(
         if env.get("AGENT_TIMEOUT_SECONDS")
         else None,
         "runner_args": args.runner_args,
+        "b1": b1_manifest(getattr(args, "verifier_config", None), env)
+        if args.variant != "B0"
+        else None,
         "judge": {
             "backend": env.get("JUDGE_BACKEND"),
             "endpoint": env.get("JUDGE_ENDPOINT"),
@@ -261,6 +266,20 @@ def build_start_manifest(
         "events": [],
         "status": "running",
     }
+
+
+def b1_manifest(verifier_config: str | None, env: dict[str, str]) -> dict[str, Any]:
+    """Resolved B1 verifier config, its hash and the judge prompt hash (WS2.2)."""
+    from capstone.b1.config import VerifierConfig
+    from capstone.b1.step import describe_config
+
+    cfg = VerifierConfig.load(verifier_config)
+    out = describe_config(cfg)
+    out["config_file"] = verifier_config
+    judge = out["verifier"]["judge"]
+    out["judge_model_resolved"] = judge["model"] or env.get("JUDGE_MODEL")
+    out["judge_endpoint_resolved"] = judge["endpoint"] or env.get("JUDGE_ENDPOINT")
+    return out
 
 
 def mark(
@@ -300,6 +319,8 @@ def count_predictions(run_dir: Path) -> dict[str, int]:
             continue
         n = 0
         for path in cap_dir.glob("*.json"):
+            if is_sidecar(path):
+                continue
             try:
                 data = json.loads(path.read_text())
             except (OSError, ValueError):
@@ -344,6 +365,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     s.add_argument("--eval-parallel", action="store_true")
     s.add_argument("--config-file")
+    s.add_argument("--verifier-config", help="B1 verifier config JSON (variant B1+)")
     s.add_argument(
         "--vllm-flags", help="vLLM serve flags as configured (informational)"
     )

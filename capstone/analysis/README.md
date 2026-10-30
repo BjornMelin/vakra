@@ -29,20 +29,25 @@ A **run dir** follows the layout that `capstone/run/run_cut.sh` writes:
   - a seeded percentile bootstrap CI for the mean score difference B − A.
 
 ## Error labels
-Two headline labels, each with sub-reasons:
+Two headline labels (plan WS1.4), each with sub-reasons; `no_answer` and `policy_violation` are auxiliary:
 
 | headline | sub-reasons |
 |---|---|
-| `not_supported`: the answer isn't backed by the tool outputs | `answer_not_in_output`, `no_answer` |
-| `supported_but_wrong`: the answer is backed by tool output, but it's the wrong answer | `wrong_tool`, `wrong_arguments`, `wrong_reasoning`, `reference_wrong`, `policy_violation` |
+| `not_supported` (A): the answer isn't backed by the tool outputs it should have come from | `wrong_tool`, `wrong_arguments`, `answer_not_in_output`, `no_answer` |
+| `supported_but_wrong` (B): the answer is backed by tool output, but it's wrong | `wrong_reasoning`, `reference_wrong`, `policy_violation` |
 
-The automatic first pass checks these rules in order, and every label records its confidence and evidence:
-1. The uuid is in `--exclude-uuids`, so the label is `reference_wrong`.
-2. Error, timeout or empty answer gives `no_answer`.
-3. Policy score 0 gives `policy_violation`.
-4. Judge groundedness < 0.5 gives `answer_not_in_output`.
-5. If the predicted tool calls differ from the reference path, the label is `wrong_tool` or `wrong_arguments`. Argument comparison is case- and whitespace-insensitive.
-6. Otherwise, the share of the answer's numbers and content words found in the tool outputs decides between `answer_not_in_output` and `wrong_reasoning`. The tool outputs come from the traced outputs, or from the reference outputs when the calls match the reference path.
+The automatic first pass checks these rules in order (first match wins); every label records its confidence, evidence and `auto_rule`:
+1. The uuid is in `--exclude-uuids`: `reference_wrong`.
+2. Error, timeout or empty answer: `no_answer`.
+3. Policy score 0: `policy_violation`.
+4. Predicted tool calls differ from the reference path: `wrong_tool` or `wrong_arguments` (arguments compared case- and whitespace-insensitively).
+5. Judge groundedness < 0.5: `answer_not_in_output`.
+6. B1 deterministic check (`capstone/b1`): a value not traced to tool output gives `answer_not_in_output`; all values traced gives `wrong_reasoning`.
+7. B1 judge verdict (free-text answers, only when a B1 run recorded one): unsupported gives `answer_not_in_output`, supported gives `wrong_reasoning`.
+8. Otherwise the share of the answer's numbers and content words found in the tool outputs decides between `answer_not_in_output` and `wrong_reasoning`.
+9. Calls match the reference: `wrong_reasoning` (low confidence); else unlabeled.
+
+Rules 6-8 use tool outputs from the run's trajectory sidecars (`cap<C>/<domain>_trajectory.json`, written by the runner or `python -m capstone.b1 collect`), else traced spans, else the reference outputs when the calls match. `error_labels.csv` includes `b1_outcome`, `b1_path` and `tool_outputs_source`.
 
 To label by hand, fill in `human_headline`, `human_subreason` and `human_notes` in `error_labels.csv` and pass the file back with `--labels`. Human labels override the automatic ones. Invalid headline/sub-reason pairs are rejected.
 

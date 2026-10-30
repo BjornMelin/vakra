@@ -101,6 +101,27 @@ class BenchmarkResult:
     duration_s: float = 0.0
     all_tools: List[str] = field(default_factory=list)           # All tool names available for the domain before shortlisting
     shortlisted_tools: List[str] = field(default_factory=list)  # Tool names actually presented to the agent after shortlisting
+    initial_data: Optional[Any] = None  # Capability 1 get_data peek shown to the agent
+    verification: Optional[Dict[str, Any]] = None  # Post-answer step verdict (B1+), see capstone.variants
+    original_answer: Optional[str] = None  # Agent answer before a post-answer step replaced it
+
+    def trajectory_record(self) -> Dict[str, Any]:
+        """This result as a trajectory sidecar record (capstone.trajectories)."""
+        from capstone.trajectories import build_record
+
+        return build_record(
+            uuid=self.uuid,
+            domain=self.domain,
+            turn_id=self.turn_id,
+            query=self.query,
+            context=self.context,
+            status=self.status,
+            error=self.error,
+            answer=self.original_answer if self.original_answer is not None else self.answer,
+            tool_calls=self.tool_calls,
+            initial_data=self.initial_data,
+            verification=self.verification,
+        )
 
 
 def load_benchmark_data(
@@ -362,6 +383,25 @@ def save_tools_log(results: List[BenchmarkResult], output_dir: Path) -> None:
         with open(output_file, "w") as f:
             json.dump(records, f, indent=2)
         print(f"  Tools log saved to: {output_file}")
+
+
+def save_trajectory_log(results: List[BenchmarkResult], output_dir: Path) -> None:
+    """Save per-item tool outputs and post-answer verdicts to {domain}_trajectory.json.
+
+    The ground-truth-format files drop tool outputs; this sidecar keeps them so
+    the B1 check and error labels can be recomputed offline. Written for every
+    variant. ``answer`` is the agent's own answer; when a post-answer step
+    replaced it, the returned answer is in ``verification.answer_returned``.
+    """
+    from capstone.trajectories import trajectory_path, write_trajectories
+
+    by_domain: Dict[str, List[BenchmarkResult]] = {}
+    for r in results:
+        by_domain.setdefault(r.domain, []).append(r)
+    for domain, domain_results in by_domain.items():
+        out = trajectory_path(output_dir, domain)
+        write_trajectories((r.trajectory_record() for r in domain_results), out)
+        print(f"  Trajectory log saved to: {out}")
 
 
 class CapabilityLogger:
