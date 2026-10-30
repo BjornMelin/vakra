@@ -23,11 +23,16 @@ class JudgeValidationError(ValueError):
     pass
 
 class ChatGroq(ChatOpenAI):
-    """Groq-backed OpenAI-compatible chat model."""
+    """Groq-backed OpenAI-compatible chat model.
+
+    Works with any OpenAI-compatible server (e.g. a local vLLM). Precedence for
+    the endpoint and model: explicit config > JUDGE_ENDPOINT / JUDGE_MODEL env
+    vars > Groq defaults. JUDGE_ENDPOINT is the server root without "/v1".
+    """
 
     def __init__(self, config: dict):
-        model_name = config.get("model_name", "openai/gpt-oss-120b")
-        end_point = config.get("end_point", "https://api.groq.com/openai")
+        model_name = config.get("model_name") or os.getenv("JUDGE_MODEL") or "openai/gpt-oss-120b"
+        end_point = config.get("end_point") or os.getenv("JUDGE_ENDPOINT") or "https://api.groq.com/openai"
 
         api_key = os.getenv("API_KEY")
         if api_key is None or api_key == "":

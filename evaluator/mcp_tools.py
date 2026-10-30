@@ -12,6 +12,8 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Sequence
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
+from environment.mcp_compat import tool_input_schema
+
 from constant import PRED_OUTPUT_KEY, PRED_OUTPUT_SEQUENCE_KEY
 from utils import _ensure_list
 
@@ -386,7 +388,7 @@ class MCPToolClientBase(ABC):
             for t in tool_list:
                 # t may be dict or object
                 name = t.get("name") if isinstance(t, dict) else getattr(t, "name", None)
-                input_schema = t.get("inputSchema") if isinstance(t, dict) else getattr(t, "inputSchema", None)
+                input_schema = tool_input_schema(t)
                 if isinstance(name, str) and isinstance(input_schema, dict):
                     schema_map[name] = input_schema
             return tool_list, schema_map

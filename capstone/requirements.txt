@@ -1,0 +1,16 @@
+# Capstone extras on top of the repo's agent/evaluator requirements.
+#   uv pip install -r capstone/requirements.txt
+# Tracing is opt-in (VAKRA_TRACING=1); without these packages the runner still works.
+
+# Tracing client (OTLP/HTTP -> Phoenix, OpenInference LangChain spans)
+arize-phoenix-otel==0.17.2
+openinference-instrumentation-langchain==0.1.81
+openinference-semantic-conventions==0.1.43
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+
+# Analysis pipeline plots
+matplotlib==3.11.2
+
+# Tests
+pytest==9.2.0

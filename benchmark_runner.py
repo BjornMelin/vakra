@@ -137,6 +137,7 @@ from benchmark.runner_helpers import (
 )
 from benchmark.validate_clients import list_tools_for_domains
 from environment.m3.python_tools.mcp.mcp_server import DataPeek
+from capstone.observability import tracing as capstone_tracing
 
 load_dotenv()
 
@@ -226,102 +227,112 @@ async def run_benchmark_for_domain(
                     shortlisted_tools=_shortlisted,
                 )
 
-                start_time = time.perf_counter()
+                with capstone_tracing.task_span(
+                    capability_id=capability_id, domain=domain, uuid=item.uuid, query=item.query
+                ) as task_trace:
+                    start_time = time.perf_counter()
 
-                try:
-                    if get_data_tool:
-                        tlog(f"    Switching to universe: {item.uuid}")
-                        data_result = await get_data_tool.ainvoke(
-                            {"tool_universe_id": item.uuid}
-                        )
-                        parsed_data: DataPeek = json.loads(data_result)
+                    try:
+                        if get_data_tool:
+                            tlog(f"    Switching to universe: {item.uuid}")
+                            data_result = await get_data_tool.ainvoke(
+                                {"tool_universe_id": item.uuid}
+                            )
+                            parsed_data: DataPeek = json.loads(data_result)
 
-                        # Handle MCP TextContent format
-                        if isinstance(parsed_data, list) and parsed_data:
-                            first_item = parsed_data[0]
+                            # Handle MCP TextContent format
+                            if isinstance(parsed_data, list) and parsed_data:
+                                first_item = parsed_data[0]
+                                if (
+                                    isinstance(first_item, dict)
+                                    and "text" in first_item
+                                ):
+                                    parsed_data = json.loads(first_item["text"])
+                                else:
+                                    parsed_data = first_item
+
                             if (
-                                isinstance(first_item, dict)
-                                and "text" in first_item
+                                isinstance(parsed_data, dict)
+                                and "error" in parsed_data
                             ):
-                                parsed_data = json.loads(first_item["text"])
+                                raise RuntimeError(
+                                    f"Universe switch failed: {parsed_data['error']}"
+                                )
+
+                            tlog("    Universe loaded successfully")
+                            assert isinstance(agent, LangGraphReActAgent)
+                            agent._initial_data_handle = parsed_data["handle"]
+                            agent._initial_data_peek = parsed_data
+                            tlog(f"    Initial data handle: {agent._initial_data_handle}")
+
+                        if capability_id in [4]:
+                            if not item.context: # Single Turn Dialogues in Capability 4
+                                response = await asyncio.wait_for(
+                                    agent.run(input=item.query, additional_instructions=item.additional_instructions),
+                                    timeout=AGENT_TIMEOUT_SECONDS
+                                )
                             else:
-                                parsed_data = first_item
-
-                        if (
-                            isinstance(parsed_data, dict)
-                            and "error" in parsed_data
-                        ):
-                            raise RuntimeError(
-                                f"Universe switch failed: {parsed_data['error']}"
-                            )
-
-                        tlog("    Universe loaded successfully")
-                        assert isinstance(agent, LangGraphReActAgent)
-                        agent._initial_data_handle = parsed_data["handle"]
-                        agent._initial_data_peek = parsed_data
-                        tlog(f"    Initial data handle: {agent._initial_data_handle}")
-
-                    if capability_id in [4]:
-                        if not item.context: # Single Turn Dialogues in Capability 4
-                            response = await asyncio.wait_for(
-                                agent.run(input=item.query, additional_instructions=item.additional_instructions),
-                                timeout=AGENT_TIMEOUT_SECONDS
-                            )
+                                response = await asyncio.wait_for(
+                                    agent.run(input=item.context, additional_instructions=item.additional_instructions),
+                                    timeout=AGENT_TIMEOUT_SECONDS
+                                )
                         else:
                             response = await asyncio.wait_for(
-                                agent.run(input=item.context, additional_instructions=item.additional_instructions),
+                                agent.run(item.query),
                                 timeout=AGENT_TIMEOUT_SECONDS
-                            )
-                    else:
-                        response = await asyncio.wait_for(
-                            agent.run(item.query),
-                            timeout=AGENT_TIMEOUT_SECONDS
-                        )                        
+                            )                        
 
-                    result.answer = response.content
-                    result.tool_calls = response.tool_calls
-                    result.trajectory = response.trajectory
-                    result.status = "success"
-                    elapsed = time.perf_counter() - start_time
-                    tlog(
-                        f"    Status: success"
-                        f" | Tools: {len(result.tool_calls)}"
-                        f" | Trajectory steps:"
-                        f" {len(result.trajectory)}"
-                        f" | Time: {elapsed:.2f}s"
-                    )
-                    # Log the answer
-                    answer_preview = (
-                        result.answer[:200]
-                        if result.answer else "(empty)"
-                    )
-                    ans_suffix = (
-                        "..." if len(result.answer) > 200 else ""
-                    )
-                    tlog(
-                        f"    Answer: {answer_preview}{ans_suffix}"
-                    )
-                    # Log trajectory summary
-                    log_trajectory(result, tlog)
-                    log_message_history(result, tlog)
-                except asyncio.TimeoutError:
-                    result.status = "error"
-                    result.error = (
-                        f"Agent timed out after"
-                        f" {AGENT_TIMEOUT_SECONDS} seconds"
-                    )
-                    tlog(
-                        f"    Status: timeout after"
-                        f" {AGENT_TIMEOUT_SECONDS}s"
-                    )
-                except Exception as e:
-                    import traceback
-                    result.status = "error"
-                    result.error = f"{type(e).__name__} "+str(e)
-                    tlog(f"    Status: error | {type(e).__name__}: {str(e)[:200]}")
-                    tlog(f"    Traceback: {traceback.format_exc()}")
+                        result.answer = response.content
+                        result.tool_calls = response.tool_calls
+                        result.trajectory = response.trajectory
+                        result.status = "success"
+                        elapsed = time.perf_counter() - start_time
+                        tlog(
+                            f"    Status: success"
+                            f" | Tools: {len(result.tool_calls)}"
+                            f" | Trajectory steps:"
+                            f" {len(result.trajectory)}"
+                            f" | Time: {elapsed:.2f}s"
+                        )
+                        # Log the answer
+                        answer_preview = (
+                            result.answer[:200]
+                            if result.answer else "(empty)"
+                        )
+                        ans_suffix = (
+                            "..." if len(result.answer) > 200 else ""
+                        )
+                        tlog(
+                            f"    Answer: {answer_preview}{ans_suffix}"
+                        )
+                        # Log trajectory summary
+                        log_trajectory(result, tlog)
+                        log_message_history(result, tlog)
+                    except asyncio.TimeoutError:
+                        result.status = "error"
+                        result.error = (
+                            f"Agent timed out after"
+                            f" {AGENT_TIMEOUT_SECONDS} seconds"
+                        )
+                        tlog(
+                            f"    Status: timeout after"
+                            f" {AGENT_TIMEOUT_SECONDS}s"
+                        )
+                    except Exception as e:
+                        import traceback
+                        result.status = "error"
+                        result.error = f"{type(e).__name__} "+str(e)
+                        tlog(f"    Status: error | {type(e).__name__}: {str(e)[:200]}")
+                        tlog(f"    Traceback: {traceback.format_exc()}")
 
-                result.duration_s = time.perf_counter() - start_time
+                    result.duration_s = time.perf_counter() - start_time
+                    task_trace.record_result(
+                        status=result.status,
+                        answer=result.answer,
+                        n_tool_calls=len(result.tool_calls),
+                        duration_s=result.duration_s,
+                        error=result.error,
+                    )
                 results.append(result)
 
         tlog(f"\n  Server stopped for domain '{domain}'")
@@ -570,7 +581,10 @@ def main():
     print(f"Benchmark Runner ({mode}, capabilities: {capability_ids})")
     print("="*60)
 
-    if args.phoenix:
+    # Capstone opt-in tracing (VAKRA_TRACING=1); supersedes --phoenix when on.
+    if capstone_tracing.setup_tracing():
+        print("Capstone tracing enabled (see capstone/observability/README.md)")
+    elif args.phoenix:
         tracing_ok = _setup_phoenix(
             endpoint=args.phoenix_endpoint,
             project_name=args.phoenix_project,
@@ -628,7 +642,10 @@ def main():
             for c in coros:
                 await c
 
-    asyncio.run(_run_all())
+    try:
+        asyncio.run(_run_all())
+    finally:
+        capstone_tracing.shutdown_tracing()
 
 
 if __name__ == "__main__":

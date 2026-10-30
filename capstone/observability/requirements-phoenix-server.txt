@@ -1,0 +1,3 @@
+# Phoenix UI/collector. Installed into its own venv by start_phoenix.sh so the
+# server's dependency tree never touches the agent environment.
+arize-phoenix==20.27.0
