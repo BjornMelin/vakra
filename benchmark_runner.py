@@ -153,6 +153,17 @@ DEFAULT_MCP_CONFIG = str(
 )
 # Timeout for agent execution (seconds)
 AGENT_TIMEOUT_SECONDS = float(os.environ.get("AGENT_TIMEOUT_SECONDS", "300"))
+MCP_PING_TIMEOUT_S = 15.0
+
+
+async def _close_quietly(stack: AsyncExitStack) -> None:
+    """Close an MCP session stack whose server may already be dead."""
+    try:
+        await stack.aclose()
+    except BaseException as e:  # noqa: BLE001 - dead stdio servers raise ExceptionGroups
+        if isinstance(e, (KeyboardInterrupt, SystemExit)):
+            raise
+        logger.warning("ignored error closing MCP session: %r", e)
 
 
 async def run_benchmark_for_domain(
@@ -181,29 +192,47 @@ async def run_benchmark_for_domain(
 
     results: List[BenchmarkResult] = []
 
+    from environment.tool_checksums import verify_checksum
+
+    async def _open_session(stack: AsyncExitStack):
+        # Primary MCP server (always present).
+        # For Task 3, cfg.container_command points to bpo_router.py which
+        # exec's into the correct server (BPO or M3 REST) based on MCP_DOMAIN.
+        session = await stack.enter_async_context(
+            create_client_and_connect(cfg, domain)
+        )
+        # Client-side checksum verification: confirm the server returned
+        # the expected tools for this (capability_id, domain) pair.
+        raw_tools = (await session.list_tools()).tools
+        verify_checksum(capability_id, domain, raw_tools)
+
+        wrapper = MCPToolWrapper(session)
+        tools = await wrapper.get_tools()
+        tlog(f"  Loaded {len(tools)} tools for domain '{domain}'")
+
+        agent = _get_agent(capability_id, llm, tools, top_k_tools, max_iterations)
+
+        get_data_tool = next(
+            (t for t in tools if t.name == "get_data"), None
+        )
+        return session, tools, agent, get_data_tool
+
+    async def _session_alive(session) -> bool:
+        try:
+            await asyncio.wait_for(session.send_ping(), timeout=MCP_PING_TIMEOUT_S)
+            return True
+        except Exception:
+            return False
+
     try:
         async with AsyncExitStack() as stack:
-            # Primary MCP server (always present).
-            # For Task 3, cfg.container_command points to bpo_router.py which
-            # exec's into the correct server (BPO or M3 REST) based on MCP_DOMAIN.
-            session = await stack.enter_async_context(
-                create_client_and_connect(cfg, domain)
-            )
-            # Client-side checksum verification: confirm the server returned
-            # the expected tools for this (capability_id, domain) pair.
-            from environment.tool_checksums import verify_checksum
-            raw_tools = (await session.list_tools()).tools
-            verify_checksum(capability_id, domain, raw_tools)
-
-            wrapper = MCPToolWrapper(session)
-            tools = await wrapper.get_tools()
-            tlog(f"  Loaded {len(tools)} tools for domain '{domain}'")
-
-            agent = _get_agent(capability_id, llm, tools, top_k_tools, max_iterations)
-
-            get_data_tool = next(
-                (t for t in tools if t.name == "get_data"), None
-            )
+            # The MCP server is one stdio process per domain. If it dies mid-
+            # domain (seen after agent timeouts cancel in-flight tool calls),
+            # every later task fails with "MCPError: Connection closed", so a
+            # failed task is followed by a ping and, if needed, a reconnect.
+            session_stack = AsyncExitStack()
+            stack.push_async_callback(lambda: _close_quietly(session_stack))
+            session, tools, agent, get_data_tool = await _open_session(session_stack)
 
             # Run all queries for this domain
             for i, item in enumerate(tqdm(items,desc=f"[{capability_id}|{domain}]")):
@@ -339,6 +368,16 @@ async def run_benchmark_for_domain(
                         error=result.error,
                     )
                 results.append(result)
+
+                if (
+                    result.status != "success"
+                    and i + 1 < len(items)
+                    and not await _session_alive(session)
+                ):
+                    tlog("    MCP session is dead; reconnecting before the next task")
+                    await _close_quietly(session_stack)
+                    session_stack = AsyncExitStack()
+                    session, tools, agent, get_data_tool = await _open_session(session_stack)
 
         tlog(f"\n  Server stopped for domain '{domain}'")
     except ExceptionGroup as eg:
