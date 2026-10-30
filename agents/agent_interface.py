@@ -27,6 +27,7 @@ Benchmark runner examples:
 """
 import json
 import logging
+import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -42,7 +43,28 @@ from agents.components.tool_shortlister import ToolShortlister
 from agents.llm import create_llm
 
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(os.environ.get("VAKRA_LOG_LEVEL", "DEBUG").upper())
+
+
+def _content_text(content) -> str:
+    """Return the plain-text part of a LangChain message ``content``.
+
+    Providers that return reasoning (e.g. gpt-oss through LiteLLM) give
+    ``content`` as a list of blocks such as ``{"type": "thinking", ...}`` and
+    ``{"type": "text", "text": ...}``. The final answer is the text blocks only;
+    reasoning stays in the trajectory.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text") or "")
+    return "".join(parts)
 
 
 @dataclass
@@ -319,8 +341,9 @@ INITIAL DATA:
                     trajectory.append(trajectory_entry)
 
                 elif msg_class == "AIMessage":
-                    if msg.content:
-                        final_content = msg.content
+                    text = _content_text(msg.content)
+                    if text:
+                        final_content = text
                     response_messages.append(Message(
                         role="assistant",
                         content=msg.content or msg.additional_kwargs.get("reasoning")
