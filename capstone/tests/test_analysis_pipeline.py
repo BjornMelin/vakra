@@ -75,7 +75,7 @@ def test_auto_labels(run_a, gt_root):
     items = load_run(run_a, gt_root).by_key()
     lab = {u: L.auto_label(items[(2, u)]) for u in ("u2", "u3", "u4")}
     assert (lab["u2"].headline, lab["u2"].subreason) == (
-        L.SUPPORTED_BUT_WRONG,
+        L.NOT_SUPPORTED,
         "wrong_tool",
     )
     assert (lab["u3"].headline, lab["u3"].subreason) == (
@@ -147,7 +147,7 @@ def test_human_labels_override_and_validate(tmp_path):
     labels = L.read_human_labels(p)
     assert set(labels) == {(2, "u2")}
     assert (
-        labels[(2, "u2")].headline == L.SUPPORTED_BUT_WRONG
+        labels[(2, "u2")].headline == L.NOT_SUPPORTED
         and labels[(2, "u2")].source == "human"
     )
 
@@ -156,7 +156,7 @@ def test_human_labels_override_and_validate(tmp_path):
             {
                 "capability": 2,
                 "uuid": "u4",
-                "human_headline": "not_supported",
+                "human_headline": "supported_but_wrong",
                 "human_subreason": "wrong_tool",
             }
         )
