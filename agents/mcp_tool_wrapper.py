@@ -15,6 +15,8 @@ from langchain_core.tools import StructuredTool
 from mcp import ClientSession
 from pydantic import BaseModel, Field, create_model
 
+from environment.mcp_compat import tool_input_schema
+
 
 class MCPToolWrapper:
     """Wrapper to convert MCP tools to LangChain StructuredTool objects.
@@ -122,10 +124,11 @@ class MCPToolWrapper:
         """
         # 1. Convert schema (CRITICAL: This ensures LLM can see parameters)
         args_schema = None
-        if hasattr(mcp_tool, 'inputSchema') and mcp_tool.inputSchema:
+        input_schema = tool_input_schema(mcp_tool)
+        if input_schema:
             args_schema = self._convert_json_schema_to_pydantic(
                 mcp_tool.name,
-                mcp_tool.inputSchema
+                input_schema
             )
 
         # 2. Sanitize name if needed

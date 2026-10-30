@@ -18,6 +18,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from environment.mcp_compat import tool_input_schema
+
 logger = logging.getLogger(__name__)
 
 # Set MCP_VERIFY_CHECKSUMS=1 (or "true"/"yes") to enable checksum verification.
@@ -55,16 +57,7 @@ def compute_tool_checksum(tools: List[Any]) -> str:
         key=lambda t: t.name if hasattr(t, "name") else t["name"],
     ):
         name = tool.name if hasattr(tool, "name") else tool["name"]
-        schema = (
-            tool.inputSchema
-            if hasattr(tool, "inputSchema")
-            else tool.get("inputSchema", {})
-        )
-        # Pydantic v2 → plain dict
-        if hasattr(schema, "model_dump"):
-            schema = schema.model_dump()
-        elif hasattr(schema, "dict"):
-            schema = schema.dict()  # type: ignore[union-attr]
+        schema = tool_input_schema(tool) or {}
         entries.append({"name": name, "inputSchema": schema})
 
     canonical = json.dumps(entries, sort_keys=True, separators=(",", ":"))
