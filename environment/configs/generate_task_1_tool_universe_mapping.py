@@ -2,8 +2,15 @@
 """
 Generate environment/configs/mcp_tool_universe_id_mapping.yaml from task_1 output files.
 
+Capability 1 servers can only switch to tool universes listed in the mapping,
+and each benchmark item's uuid is its universe id. The committed mapping covers
+the gated test split; to run the public train split, add its universes too:
+
+    python environment/configs/generate_task_1_tool_universe_mapping.py --split train --merge
+
 Usage:
-    python scripts/generate_mcp_mapping.py [--dry-run]
+    python environment/configs/generate_task_1_tool_universe_mapping.py \
+        [--split test|train ...] [--merge] [--dry-run]
 """
 import json
 import sys
@@ -13,7 +20,7 @@ from pathlib import Path
 import yaml
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
-OUTPUT_DIRS_GLOB = "data/test/capability_1_bi_apis/output"
+OUTPUT_DIRS_GLOB = "data/{split}/capability_1_bi_apis/output"
 MAPPING_FILE = "environment/configs/mcp_tool_universe_id_mapping.yaml"
 
 # Unique to SelectionTools (not present in SlotFillingTools)
@@ -37,16 +44,28 @@ SLOT_FILLING_ONLY_TOOLS = {
 }
 
 
-def generate_mapping(dry_run: bool = False):
-    output_dirs = sorted(REPO_ROOT.glob(OUTPUT_DIRS_GLOB))
-    if not output_dirs:
-        print(
-            f"ERROR: No output directories found matching {OUTPUT_DIRS_GLOB}",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+def generate_mapping(
+    splits: tuple[str, ...] = ("test",), merge: bool = False, dry_run: bool = False
+):
+    output_dirs = []
+    for split in splits:
+        pattern = OUTPUT_DIRS_GLOB.format(split=split)
+        found = sorted(REPO_ROOT.glob(pattern))
+        if not found:
+            print(
+                f"ERROR: No output directories found matching {pattern}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        output_dirs.extend(found)
 
+    out_path = REPO_ROOT / MAPPING_FILE
     mapping = {}
+    if merge and out_path.exists():
+        with open(out_path) as f:
+            mapping = yaml.safe_load(f) or {}
+        print(f"Merging into {len(mapping)} existing entries")
+    existing_ids = set(mapping)
     duplicate_count = 0
 
     for output_dir in output_dirs:
@@ -59,7 +78,8 @@ def generate_mapping(dry_run: bool = False):
                 domain = record["domain"]
 
                 if uuid in mapping:
-                    duplicate_count += 1
+                    if uuid not in existing_ids:
+                        duplicate_count += 1
                     continue
 
                 ground_truth = record.get("output", [])
@@ -114,8 +134,7 @@ def generate_mapping(dry_run: bool = False):
             file=sys.stderr,
         )
 
-    out_path = REPO_ROOT / MAPPING_FILE
-    print(f"Generated {len(mapping)} entries")
+    print(f"Generated {len(mapping)} entries ({len(mapping) - len(existing_ids)} new)")
 
     if dry_run:
         print(f"DRY RUN: would write to {out_path}")
@@ -129,6 +148,19 @@ def generate_mapping(dry_run: bool = False):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--split",
+        action="append",
+        choices=("test", "train"),
+        help="Data split(s) to read under data/<split>/ (repeatable; default: test)",
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        help="Keep entries already in the mapping file and add new ones",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    generate_mapping(dry_run=args.dry_run)
+    generate_mapping(
+        splits=tuple(args.split or ["test"]), merge=args.merge, dry_run=args.dry_run
+    )
