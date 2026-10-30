@@ -2,6 +2,18 @@
 
 **Status:** environment is up and the smoke test passes 16/16. The evidence schema is drafted, and the model is **proposed, not agreed** (pending Thomas).
 
+## Observability and analysis (branch `capstone/observability`)
+| Path | What |
+|---|---|
+| `run/run_cut.sh`, `run/configs/b0.conf` | Runs one cut (agents, then the evaluator one capability at a time, then analysis) from a non-secret config. See `run/README.md`. |
+| `run/manifest.py` | Writes `$RUN/config.json`: model, vLLM version/flags, sampling, git SHA, N, shards, judge, timestamps |
+| `observability/` | Opt-in Phoenix tracing (`VAKRA_TRACING=1`) and `start_phoenix.sh`. See `observability/README.md`. |
+| `analysis/` | `python -m capstone.analysis summarize, compare, trace` for accuracy, cost, error labels, McNemar/bootstrap and slide traces. See `analysis/README.md`. |
+| `tests/` | `python -m pytest capstone/tests` |
+| `requirements.txt` | Pinned extras for tracing, plots and tests |
+
+**MCP 2.x compat:** in mcp ≥ 2, `Tool.inputSchema` is renamed to `input_schema`. Before this fix, `hasattr(tool, "inputSchema")` was false, so the agent's tools were built **without parameter schemas** and the evaluator lost its schema map. `environment/mcp_compat.tool_input_schema()` now reads both spellings, and the agent wrapper, evaluator, evaluator MCP tools and tool checksums all use it.
+
 ## What's here
 | File | What |
 |---|---|
