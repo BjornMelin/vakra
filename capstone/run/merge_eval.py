@@ -2,8 +2,9 @@
 
 run_cut.sh with EVAL_JOBS>0 runs ``evaluator/evaluator.py --domains <d>`` once
 per (capability, domain), each writing ``eval/parts/cap<C>/<d>.json``. This
-rebuilds ``eval/cap<C>.json`` with the evaluator's own summary code, so the
-result matches what one sequential evaluator run writes.
+rebuilds ``eval/cap<C>.json`` with the same summary fields the evaluator writes
+(mirrors ``evaluator._write_intermediate_results``), so the result matches
+what one sequential evaluator run writes.
 
     python -m capstone.run.merge_eval --parts eval/parts/cap1 --out eval/cap1.json
 """
@@ -15,7 +16,30 @@ import json
 import sys
 from pathlib import Path
 
-from evaluator.evaluator import _write_intermediate_results
+
+
+def _write_intermediate_results(results: dict, scores: list[float], out_path: Path) -> dict:
+    """Copy of evaluator.evaluator._write_intermediate_results.
+
+    Importing evaluator.py builds judge clients at import time (and needs judge
+    credentials), so the summary math is mirrored here instead. Keep in sync.
+    """
+    doms = results["domains"].values()
+    total_samples = sum(d["summary"]["num_samples"] for d in doms)
+    num_correct = sum(scores) if scores else 0.0
+    results["summary"] = {
+        "n_domains": len(results["domains"]),
+        "n_paired_dialogues": sum(d["n_paired"] for d in doms),
+        "n_missing_predictions": sum(len(d["missing_prediction_uuids"]) for d in doms),
+        "n_extra_predictions": sum(len(d["extra_prediction_uuids"]) for d in doms),
+        "n_samples": total_samples,
+        "n_correct": num_correct,
+        "mean_dialogue_score": (num_correct / total_samples if scores else 0.0),
+        "min_dialogue_score": (min(scores) if scores else 0.0),
+        "max_dialogue_score": (max(scores) if scores else 0.0),
+    }
+    out_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
+    return results
 
 
 def merge(parts_dir: Path, out_path: Path) -> dict:
