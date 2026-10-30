@@ -60,6 +60,11 @@ ATTR_STATUS = "vakra.status"
 ATTR_N_TOOL_CALLS = "vakra.n_tool_calls"
 ATTR_DURATION_S = "vakra.duration_s"
 ATTR_ERROR = "vakra.error"
+ATTR_B1_OUTCOME = "vakra.b1.outcome"
+ATTR_B1_PATH = "vakra.b1.path"
+ATTR_B1_REASON = "vakra.b1.reason"
+ATTR_B1_DURATION_S = "vakra.b1.duration_s"
+ATTR_B1_ACTION = "vakra.b1.action"
 OI_SESSION_ID = "session.id"
 OI_SPAN_KIND = "openinference.span.kind"
 OI_INPUT_VALUE = "input.value"
@@ -233,6 +238,19 @@ class TaskSpan:
         self._span.set_status(
             Status(StatusCode.OK if status == "success" else StatusCode.ERROR)
         )
+
+    def record_verification(self, verdict: dict[str, Any]) -> None:
+        """B1 outcome on the task's root span (b1_path is logged per task)."""
+        if self._span is None:
+            return
+        attrs = {
+            ATTR_B1_OUTCOME: verdict.get("outcome"),
+            ATTR_B1_PATH: verdict.get("b1_path"),
+            ATTR_B1_REASON: verdict.get("reason"),
+            ATTR_B1_DURATION_S: verdict.get("duration_s"),
+            ATTR_B1_ACTION: verdict.get("action"),
+        }
+        self._span.set_attributes({k: v for k, v in attrs.items() if v is not None})
 
 
 @contextmanager

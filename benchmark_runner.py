@@ -132,6 +132,7 @@ from benchmark.mcp_client import (
 from benchmark.runner_helpers import (
     save_results_ground_truth,
     save_tools_log,
+    save_trajectory_log,
     load_benchmark_data,
     log_trajectory,
     log_message_history,
@@ -143,6 +144,7 @@ from benchmark.runner_helpers import (
 from benchmark.validate_clients import list_tools_for_domains
 from environment.m3.python_tools.mcp.mcp_server import DataPeek
 from capstone.observability import tracing as capstone_tracing
+from capstone.variants import VARIANTS, PostAnswerStep, build_post_answer_step
 
 load_dotenv()
 
@@ -176,8 +178,13 @@ async def run_benchmark_for_domain(
     top_k_tools: int = 0,
     max_iterations: Optional[int] = None,
     tlog: CapabilityLogger = None,
+    post_answer_step: Optional[PostAnswerStep] = None,
 ) -> List[BenchmarkResult]:
-    """Run benchmark for a single domain - starts MCP server once."""
+    """Run benchmark for a single domain - starts MCP server once.
+
+    ``post_answer_step`` (B1+) runs after each task inside its trace span; B0
+    passes None.
+    """
     import time
     if tlog is None:
         tlog = print  # type: ignore[assignment]
@@ -297,6 +304,7 @@ async def run_benchmark_for_domain(
                             assert isinstance(agent, LangGraphReActAgent)
                             agent._initial_data_handle = parsed_data["handle"]
                             agent._initial_data_peek = parsed_data
+                            result.initial_data = parsed_data
                             tlog(f"    Initial data handle: {agent._initial_data_handle}")
 
                         if capability_id in [4]:
@@ -360,6 +368,8 @@ async def run_benchmark_for_domain(
                         tlog(f"    Traceback: {traceback.format_exc()}")
 
                     result.duration_s = time.perf_counter() - start_time
+                    if post_answer_step is not None:
+                        await _apply_post_answer_step(post_answer_step, result, task_trace, tlog)
                     task_trace.record_result(
                         status=result.status,
                         answer=result.answer,
@@ -392,6 +402,30 @@ async def run_benchmark_for_domain(
     return results
 
 
+async def _apply_post_answer_step(
+    step: PostAnswerStep,
+    result: BenchmarkResult,
+    task_trace: "capstone_tracing.TaskSpan",
+    tlog,
+) -> None:
+    """Run the variant's post-answer step; its answer is what gets scored.
+
+    Runs in a worker thread (the B1 judge call is blocking). The agent's own
+    answer is kept in ``result.original_answer`` and the trajectory sidecar.
+    """
+    verdict = await asyncio.to_thread(step, result.trajectory_record())
+    result.verification = verdict.model_dump(mode="json")
+    result.original_answer = result.answer
+    if verdict.answer_returned is not None:
+        result.answer = verdict.answer_returned
+    task_trace.record_verification(result.verification)
+    tlog(
+        f"    {step.variant}: {verdict.outcome} via {verdict.b1_path} ({verdict.reason})"
+        + (f" failed_field={verdict.failed_field!r}" if verdict.failed_field else "")
+        + f" | action={verdict.action} | {verdict.duration_s:.3f}s"
+    )
+
+
 def _get_agent(capability_id: int, llm, tools, top_k_tools: int = 0, max_iterations: Optional[int] = None) -> AgentInterface:
     """Return the appropriate agent for the given capability_id."""
     kwargs = dict(llm=llm, tools=tools, top_k_tools=top_k_tools)
@@ -414,8 +448,11 @@ async def run_capability(
     max_iterations: Optional[int] = None,
     restart: bool = False,
     temperature: float = 0.0,
+    variant: str = "B0",
+    verifier_config: Optional[str] = None,
 ) -> List[BenchmarkResult]:
     """Run benchmark for a given capability_id, iterating over all domain files."""
+    post_answer_step = build_post_answer_step(variant, verifier_config)
 
     all_items, _ = load_benchmark_data(capability_id=capability_id, domains=domains)
 
@@ -432,6 +469,9 @@ async def run_capability(
 
     tlog(f"Capability ID: {capability_id}")
     tlog(f"Mode: {cfg.mode}")
+    tlog(f"Agent variant: {variant}")
+    if post_answer_step is not None:
+        tlog(f"Post-answer step: {json.dumps(post_answer_step.describe(), sort_keys=True)}")
     if not cfg.command and cfg.mode == "stdio":
         tlog(f"Container name: {cfg.container_name}")
     tlog(f"Processing {len(domain_list)} domain(s): {domain_list}")
@@ -472,10 +512,12 @@ async def run_capability(
             top_k_tools=top_k_tools,
             max_iterations=max_iterations,
             tlog=tlog,
+            post_answer_step=post_answer_step,
         )
         all_results.extend(domain_results)
         save_results_ground_truth(domain_results, out_dir)
         save_tools_log(domain_results, out_dir)
+        save_trajectory_log(domain_results, out_dir)
 
     results = all_results
 
@@ -617,6 +659,22 @@ def main():
         help="LLM temperature (default: 0.0)"
     )
 
+    parser.add_argument(
+        "--variant",
+        choices=VARIANTS,
+        default=os.environ.get("VAKRA_AGENT_VARIANT", "B0"),
+        help=(
+            "Agent variant on the shared harness: B0 plain ReAct, B1 adds the"
+            " answer-provenance check (capstone/b1). Default: $VAKRA_AGENT_VARIANT or B0"
+        ),
+    )
+    parser.add_argument(
+        "--verifier-config",
+        type=str,
+        default=None,
+        help="B1 verifier config JSON (capstone/b1/config.py); default: built-in defaults",
+    )
+
     args = parser.parse_args()
     capability_ids = args.capability_id  # list of ints now
 
@@ -654,7 +712,9 @@ def main():
             top_k_tools=args.top_k_tools,
             max_iterations=args.max_iterations,
             restart=args.restart,
-            temperature=args.temperature
+            temperature=args.temperature,
+            variant=args.variant,
+            verifier_config=args.verifier_config,
         )
 
     def _make_list_tools_coro(tid: int):

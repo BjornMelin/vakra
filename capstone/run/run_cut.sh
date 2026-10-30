@@ -4,10 +4,12 @@
 #   capstone/run/run_cut.sh capstone/run/configs/b0.conf
 #   N=5 TRACING=1 capstone/run/run_cut.sh capstone/run/configs/b0.conf
 #   N=all PARALLEL=48 capstone/run/run_cut.sh capstone/run/configs/b0.conf   # full split
+#   capstone/run/run_cut.sh capstone/run/configs/b1.conf                      # B1 (capstone/b1)
 #
 # Layout under $RUN_ROOT/$RUN_ID:
 #   config.json               run manifest (capstone/run/manifest.py)
 #   cap<C>/<domain>.json      agent predictions      logs/cap<C>_s<shard>.log
+#   cap<C>/<domain>_trajectory.json  tool outputs + B1 verdicts (capstone/trajectories.py)
 #                                                     (PARALLEL>0: logs/cap<C>_<domain>.log)
 #   eval/cap<C>.json          evaluator output        logs/eval_cap<C>.log
 #   traces/spans-<pid>.jsonl  span records when TRACING=1
@@ -27,6 +29,9 @@
 # (GET /openapi.json inside the container) before each agent and evaluator job
 # and waits up to TOOL_HEALTH_WAIT_S for it; a job whose server never recovers
 # fails instead of recording tool timeouts as agent errors.
+#
+# VARIANT selects the agent on the shared runner (B0 plain ReAct, B1 adds the
+# answer check); VERIFIER_CONFIG is the B1 config JSON (capstone/b1/config.py).
 #
 # SKIP_AGENTS=1 with RUN_ID=<existing run> re-scores existing predictions.
 # EVAL_JOBS=p runs one evaluator per (capability, domain), p at a time, and merges
@@ -65,6 +70,12 @@ load_config
 : "${PARALLEL:=0}" "${EVAL_JOBS:=0}" "${SKIP_AGENTS:=0}" "${EVAL_PARALLEL:=0}" "${TRACING:=0}" "${PHOENIX_COLLECTOR_ENDPOINT:=http://127.0.0.1:6006}"
 : "${PHOENIX_PROJECT_NAME:=vakra-capstone}" "${VLLM_FLAGS:=}" "${ANALYZE:=1}"
 : "${PARALLEL_CAP:=}" "${TOOL_HEALTH:=1}" "${TOOL_HEALTH_WAIT_S:=900}" "${EVAL_RETRIES:=3}"
+: "${VERIFIER_CONFIG:=}"
+
+# The variant is a runner flag, so every benchmark_runner call below gets it.
+VARIANT_ARGS="--variant $VARIANT"
+[[ -n "$VERIFIER_CONFIG" ]] && VARIANT_ARGS+=" --verifier-config $(realpath "$VERIFIER_CONFIG")"
+RUNNER_ARGS="$VARIANT_ARGS${RUNNER_ARGS:+ $RUNNER_ARGS}"
 
 if [[ -n "$VENV" ]]; then
   # shellcheck disable=SC1091
@@ -74,6 +85,7 @@ fi
 # Local vLLM ignores the key; never hard-code real keys in configs.
 export LITELLM_API_KEY="${LITELLM_API_KEY:-dummy}" API_KEY="${API_KEY:-dummy}"
 export LITELLM_BASE_URL AGENT_TIMEOUT_SECONDS JUDGE_BACKEND
+export VAKRA_AGENT_VARIANT="$VARIANT"
 [[ -n "$JUDGE_ENDPOINT" ]] && export JUDGE_ENDPOINT
 [[ -n "$JUDGE_MODEL" ]] && export JUDGE_MODEL
 if [[ -n "$REASONING_EFFORT" && -z "${LITELLM_EXTRA_BODY:-}" ]]; then
@@ -137,7 +149,8 @@ else
   manifest start --run-dir "$RUN" --run-id "$RUN_ID" --variant "$VARIANT" --model "$MODEL" \
     --provider "$PROVIDER" --temperature "$TEMPERATURE" ${REASONING_EFFORT:+--reasoning-effort "$REASONING_EFFORT"} \
     ${N_ARGS:+--n "$N"} --shards "$SHARDS" --parallel "$PARALLEL" --eval-jobs "$EVAL_JOBS" --task-counts "$task_counts" --capabilities $CAPS --shard-timeout "$SHARD_TIMEOUT_S" \
-    --runner-args "$RUNNER_ARGS" --config-file "$CONFIG_FILE" --vllm-flags "$VLLM_FLAGS" "${eval_flag[@]}"
+    --runner-args "$RUNNER_ARGS" --config-file "$CONFIG_FILE" --vllm-flags "$VLLM_FLAGS" "${eval_flag[@]}" \
+    ${VERIFIER_CONFIG:+--verifier-config "$VERIFIER_CONFIG"}
 fi
 
 on_interrupt() {
