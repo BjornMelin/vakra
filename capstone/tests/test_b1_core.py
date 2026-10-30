@@ -244,3 +244,11 @@ def test_step_never_loses_answer(monkeypatch):
     v = S.B1Step(NO_JUDGE, None)({"answer": "42", "tool_calls": []})
     assert (v.outcome, v.reason, v.answer_returned) == ("insufficient_evidence", "verifier_error", "42")
     assert verifier_error({"answer": "x"}, NO_JUDGE, ValueError("e")).error == "ValueError: e"
+
+
+def test_number_trace_stops_at_first_direct_hit():
+    # 200k equal numbers: the trace must not walk all of them (it used to, on huge tool dumps).
+    idx = EvidenceIndex.build([("t", [[7]] * 200_000)], query="give me 7")
+    n = next(v for v in extract_answer_values("It is 7.").values if v.kind == "number")
+    tr = idx.trace(n)
+    assert tr is not None and tr.via == "direct" and tr.evidence_id == "t0:t"

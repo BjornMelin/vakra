@@ -72,6 +72,10 @@ class GoldCase:
 # A gold file is parsed whole; some train files are several GB (huge tool
 # responses), so they are skipped by default and listed in the report.
 DEFAULT_MAX_FILE_BYTES = 200_000_000
+# A few gold answers are whole tool dumps (cap2 movie_platform has one of 853M
+# chars). No agent answer is that long and the judge could not read it, so such
+# cases are skipped and listed in the report instead of checked.
+DEFAULT_MAX_ANSWER_CHARS = 100_000
 
 
 def iter_gold(
@@ -156,6 +160,7 @@ class GoldCheckReport:
     false_alarms: list[dict[str, Any]] = field(default_factory=list)
     misses: list[dict[str, Any]] = field(default_factory=list)
     skipped_files: list[str] = field(default_factory=list)
+    skipped_cases: list[dict[str, Any]] = field(default_factory=list)
 
     def add(self, key: str, outcome: str, path: str) -> None:
         self.counts[key][f"{path}/{outcome}"] += 1
@@ -189,10 +194,15 @@ def gold_check(
     seed: int = 210,
     keep_examples: int = 25,
     max_file_bytes: int | None = DEFAULT_MAX_FILE_BYTES,
+    max_answer_chars: int | None = DEFAULT_MAX_ANSWER_CHARS,
 ) -> GoldCheckReport:
     rng = random.Random(seed)
     rep = GoldCheckReport()
     for case in iter_gold(gt_root, caps, max_file_bytes=max_file_bytes, skipped=rep.skipped_files):
+        if max_answer_chars is not None and len(case.answer) > max_answer_chars:
+            rep.skipped_cases.append({"cap": case.capability, "domain": case.domain, "uuid": case.uuid,
+                                      "answer_chars": len(case.answer)})
+            continue
         base = VerifierInput(query=case.query, answer=case.answer,
                              tool_outputs=case.tool_outputs, context=case.context)
         v = verify(base, cfg, judge)

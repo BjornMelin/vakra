@@ -130,6 +130,10 @@ class EvidenceIndex:
                 # Closed interval: "1.26" covers [1.255, 1.265], lenient at the edges.
                 _, eid, via = self._numbers[i]
                 r = 0 if via == "direct" else 1 if via in ("query", "context") else 2
+                if r == 0:
+                    # Nothing ranks above direct, and the first direct hit is the one we would keep.
+                    # Stopping here matters when a tool output has millions of equal numbers.
+                    return Trace(eid, via)
                 if best is None or r < best[0]:
                     best = (r, Trace(eid, via))
                 i += 1

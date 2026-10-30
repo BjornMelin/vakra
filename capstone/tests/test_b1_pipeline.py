@@ -220,6 +220,10 @@ def test_gold_check_on_real_gold_sample(gold_sample):
     assert {r["key"]: r for r in strict.rows()}["all:entity_swap"]["detection_rate"] == 1.0
     big = gold_check(gold_sample, NO_JUDGE, max_file_bytes=10)
     assert big.skipped_files and not big.rows()
+    longest = max(len(c.answer) for c in cases)
+    capped = gold_check(gold_sample, NO_JUDGE, max_answer_chars=longest - 1)
+    assert capped.skipped_cases and all(c["answer_chars"] == longest for c in capped.skipped_cases)
+    assert {r["key"]: r for r in capped.rows()}["all:gold"]["n"] == 12 - len(capped.skipped_cases)
 
 
 # -- runner helpers / manifest / tracing ---------------------------------------

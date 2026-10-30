@@ -76,6 +76,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--with-judge", action="store_true", help="call the configured judge (default: off)")
     g.add_argument("--max-file-mb", type=float, default=200.0,
                    help="skip gold files larger than this (parsed whole); 0 = no limit")
+    g.add_argument("--max-answer-chars", type=int, default=100_000,
+                   help="skip gold cases whose answer is longer than this; 0 = no limit")
     g.add_argument("--out", type=Path, required=True)
     return parser
 
@@ -131,11 +133,13 @@ def cmd_gold_check(args: argparse.Namespace) -> int:
     cfg = VerifierConfig.load(args.verifier_config)
     judge = build_judge(cfg.judge) if args.with_judge else None
     limit = int(args.max_file_mb * 1e6) if args.max_file_mb > 0 else None
-    rep = gold_check(args.gt_root, cfg, judge, caps=sorted(_caps(args.caps) or ()), max_file_bytes=limit)
+    rep = gold_check(args.gt_root, cfg, judge, caps=sorted(_caps(args.caps) or ()), max_file_bytes=limit,
+                     max_answer_chars=args.max_answer_chars or None)
     args.out.mkdir(parents=True, exist_ok=True)
     rows = rep.rows()
     payload = {"config_sha256": cfg.sha256(), "judge": bool(judge), "rows": rows,
-               "skipped_files": rep.skipped_files, "false_alarms": rep.false_alarms,
+               "skipped_files": rep.skipped_files, "skipped_cases": rep.skipped_cases,
+               "false_alarms": rep.false_alarms,
                "misses": rep.misses}
     (args.out / "gold_check.json").write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
     _write_rows(args.out / "gold_check.csv", rows)
@@ -143,6 +147,8 @@ def cmd_gold_check(args: argparse.Namespace) -> int:
         print(row)
     if rep.skipped_files:
         print("skipped (too large):", ", ".join(rep.skipped_files))
+    for c in rep.skipped_cases:
+        print(f"skipped case (answer {c['answer_chars']} chars): cap{c['cap']}/{c['domain']} {c['uuid']}")
     return 0
 
 
