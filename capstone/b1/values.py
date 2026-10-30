@@ -310,6 +310,7 @@ def extract_answer_values(text: str) -> Extraction:
         value = parse_number(num)
         half = _half_ulp(num.replace(",", ""))
         scale = _SCALES.get((m["scale"] or "").lower(), 1.0)
+        suffixed = False
         unit_word = (m["unit"] or "").lower()
         unit = None
         if m["pct"]:
@@ -322,10 +323,14 @@ def extract_answer_values(text: str) -> Extraction:
             # "5k", "1.2m": a scale suffix written right after the digits.
             if text[m.end("num") : m.end("num") + 1].isalpha():
                 scale = _SCALES[unit_word]
+                suffixed = True
         lo, hi = (value - half) * scale, (value + half) * scale
         alts: tuple[tuple[float, float], ...] = ()
         if unit == "percent":
             alts = ((lo / 100.0, hi / 100.0),)
+        elif suffixed:
+            # The tool may hold the same suffixed string ("6.6M" app size).
+            alts = ((value - half, value + half),)
         norm = f"{value * scale:g}"
         ex.values.append(
             AnswerValue(

@@ -125,6 +125,15 @@ def test_deterministic_accept_and_reject():
     assert (v.outcome, v.reason, v.failed_field, v.status) == ("reject", "untraced_value", "43", "failed")
 
 
+def test_scale_suffix_matches_suffixed_or_scaled_tool_values():
+    # gold false alarm (cap4 app_store): the tool returns the same "6.6M" string
+    assert verify(vin("6.6M, 20", [("t", '[["6.6M", 20]]')]), NO_JUDGE).outcome == "accept"
+    assert verify(vin("6.6M, 20", [("t", "[[6600000, 20]]")]), NO_JUDGE).outcome == "accept"
+    assert verify(vin("6.7M, 20", [("t", '[["6.6M", 20]]')]), NO_JUDGE).outcome == "reject"
+    # gold false alarm (cap3 restaurant): "# 4b" is a suite number, not 4 billion
+    assert verify(vin("moorpark ave # 4b", [("t", '[["moorpark ave # 4b"]]')]), NO_JUDGE).outcome == "accept"
+
+
 def test_float_precision_tolerance():
     out = [("t", "[[1.2649]]")]
     assert verify(vin("about 1.26", out), NO_JUDGE).outcome == "accept"
