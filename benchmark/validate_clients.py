@@ -31,6 +31,7 @@ from benchmark.mcp_client import (
 )
 from benchmark.runner_helpers import load_benchmark_data
 from benchmark.utils import generate_openapi_spec
+from environment.mcp_compat import tool_input_schema
 
 # Suppress noisy logging from MCP servers and related modules
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -88,10 +89,7 @@ async def list_tools_for_domains(
                         tools_detailed.append({
                             "name": tool.name,
                             "description": tool.description or "",
-                            "inputSchema": (
-                                tool.inputSchema
-                                if hasattr(tool, "inputSchema") else {}
-                            ),
+                            "inputSchema": tool_input_schema(tool) or {},
                         })
                 print("  Server stopped.")
             except ExceptionGroup as eg:
