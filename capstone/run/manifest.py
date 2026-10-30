@@ -42,6 +42,7 @@ ENV_ALLOWLIST = (
     "JUDGE_ENDPOINT",
     "JUDGE_MODEL",
     "VAKRA_TRACING",
+    "VAKRA_LOG_LEVEL",
     "VAKRA_RUN_ID",
     "VAKRA_AGENT_VARIANT",
     "VAKRA_TRACE_DIR",
@@ -228,6 +229,10 @@ def build_start_manifest(
         "litellm_extra_body": json.loads(extra_body) if extra_body else None,
         "max_samples_per_domain": args.n,
         "shards": args.shards,
+        "parallel_jobs": getattr(args, "parallel", None),
+        "tasks_planned": json.loads(args.task_counts)
+        if getattr(args, "task_counts", None)
+        else None,
         "capabilities": args.capabilities,
         "shard_timeout_s": args.shard_timeout,
         "agent_timeout_s": float(env["AGENT_TIMEOUT_SECONDS"])
@@ -281,8 +286,27 @@ def finish(run_dir: Path, status: str = "ok") -> dict[str, Any]:
         ) - dt.datetime.fromisoformat(started)
         manifest["wall_clock_s"] = elapsed.total_seconds()
     manifest["status"] = status
+    manifest["predictions"] = count_predictions(Path(run_dir))
     write_manifest(run_dir, manifest)
     return manifest
+
+
+def count_predictions(run_dir: Path) -> dict[str, int]:
+    """Count agent prediction records per capability directory (cap<C>/)."""
+    counts: dict[str, int] = {}
+    for cap_dir in sorted(run_dir.glob("cap[0-9]*")):
+        if not cap_dir.is_dir():
+            continue
+        n = 0
+        for path in cap_dir.glob("*.json"):
+            try:
+                data = json.loads(path.read_text())
+            except (OSError, ValueError):
+                continue
+            if isinstance(data, list):
+                n += len(data)
+        counts[cap_dir.name] = n
+    return counts
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -303,6 +327,12 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--reasoning-effort")
     s.add_argument("--n", type=int, help="--max-samples-per-domain")
     s.add_argument("--shards", type=int)
+    s.add_argument(
+        "--parallel", type=int, help="global agent job slots (queue mode)"
+    )
+    s.add_argument(
+        "--task-counts", help='JSON {"<cap>": <tasks selected>} for this run'
+    )
     s.add_argument("--capabilities", type=int, nargs="*", default=[])
     s.add_argument("--shard-timeout", type=float)
     s.add_argument(

@@ -3,13 +3,20 @@
 #
 #   capstone/run/run_cut.sh capstone/run/configs/b0.conf
 #   N=5 TRACING=1 capstone/run/run_cut.sh capstone/run/configs/b0.conf
+#   N=all PARALLEL=48 capstone/run/run_cut.sh capstone/run/configs/b0.conf   # full split
 #
 # Layout under $RUN_ROOT/$RUN_ID:
 #   config.json               run manifest (capstone/run/manifest.py)
 #   cap<C>/<domain>.json      agent predictions      logs/cap<C>_s<shard>.log
+#                                                     (PARALLEL>0: logs/cap<C>_<domain>.log)
 #   eval/cap<C>.json          evaluator output        logs/eval_cap<C>.log
 #   traces/spans-<pid>.jsonl  span records when TRACING=1
 #   analysis/                 capstone.analysis summarize output
+#
+# N=all (or 0) runs every task. SHARDS=k starts k runner processes per capability
+# with domains dealt round-robin. PARALLEL=p instead runs one runner per
+# (capability, domain), largest domains first, with p running at once across all
+# capabilities; use it for full-split runs, where domain sizes vary 1-150 tasks.
 #
 # Evaluators run one capability at a time by default: concurrent evaluators
 # start competing MCP sessions against the same containers and corrupted
@@ -41,7 +48,7 @@ load_config
 : "${N:=2}" "${SHARDS:=8}" "${CAPS:=1 2 3 4}" "${SHARD_TIMEOUT_S:=1200}" "${AGENT_TIMEOUT_SECONDS:=300}"
 : "${RUNNER_ARGS:=}" "${RUN_ROOT:=runs}" "${GT_ROOT:=data/train}" "${MCP_CONFIG:=benchmark/mcp_connection_config.yaml}"
 : "${VENV:=}" "${EXCLUDE_UUIDS:=}" "${JUDGE_BACKEND:=groq}" "${JUDGE_ENDPOINT:=}" "${JUDGE_MODEL:=}"
-: "${EVAL_PARALLEL:=0}" "${TRACING:=0}" "${PHOENIX_COLLECTOR_ENDPOINT:=http://127.0.0.1:6006}"
+: "${PARALLEL:=0}" "${EVAL_PARALLEL:=0}" "${TRACING:=0}" "${PHOENIX_COLLECTOR_ENDPOINT:=http://127.0.0.1:6006}"
 : "${PHOENIX_PROJECT_NAME:=vakra-capstone}" "${VLLM_FLAGS:=}" "${ANALYZE:=1}"
 
 if [[ -n "$VENV" ]]; then
@@ -71,12 +78,30 @@ fi
 declare -A DIRS=([1]=capability_1_bi_apis [2]=capability_2_dashboard_apis [3]=capability_3_multihop_reasoning [4]=capability_4_multiturn)
 declare -A NAMES=([1]=capability_bi_apis [2]=capability_dashboard_apis [3]=capability_multihop_reasoning [4]=capability_multiturn)
 
+[[ "$N" == all ]] && N=0
+N_ARGS=(); (( N > 0 )) && N_ARGS=(--max-samples-per-domain "$N")
+
+# Tasks selected per capability (min(N, domain size) summed over domains).
+task_counts=$(python - "$GT_ROOT" "$N" $CAPS <<'PY'
+import json, sys
+from pathlib import Path
+root, n, caps = Path(sys.argv[1]), int(sys.argv[2]), sys.argv[3:]
+dirs = {"1": "capability_1_bi_apis", "2": "capability_2_dashboard_apis",
+        "3": "capability_3_multihop_reasoning", "4": "capability_4_multiturn"}
+out = {}
+for c in caps:
+    sizes = [len(json.loads(p.read_text())) for p in (root / dirs[c] / "input").glob("*.json")]
+    out[c] = sum(min(s, n) if n > 0 else s for s in sizes)
+print(json.dumps(out))
+PY
+)
+
 manifest() { python -m capstone.run.manifest "$@"; }
 eval_flag=(); [[ "$EVAL_PARALLEL" == 1 ]] && eval_flag=(--eval-parallel)
 # shellcheck disable=SC2086
 manifest start --run-dir "$RUN" --run-id "$RUN_ID" --variant "$VARIANT" --model "$MODEL" \
   --provider "$PROVIDER" --temperature "$TEMPERATURE" ${REASONING_EFFORT:+--reasoning-effort "$REASONING_EFFORT"} \
-  --n "$N" --shards "$SHARDS" --capabilities $CAPS --shard-timeout "$SHARD_TIMEOUT_S" \
+  ${N_ARGS:+--n "$N"} --shards "$SHARDS" --parallel "$PARALLEL" --task-counts "$task_counts" --capabilities $CAPS --shard-timeout "$SHARD_TIMEOUT_S" \
   --runner-args "$RUNNER_ARGS" --config-file "$CONFIG_FILE" --vllm-flags "$VLLM_FLAGS" "${eval_flag[@]}"
 
 on_interrupt() {
@@ -88,27 +113,54 @@ trap on_interrupt INT TERM
 
 # ---- agents: SHARDS processes per capability, domains round-robin ----------
 manifest mark --run-dir "$RUN" --event agents_started
-declare -a PIDS=() LABELS=()
-for C in $CAPS; do
-  mapfile -t DOMS < <(find "$GT_ROOT/${DIRS[$C]}/input" -maxdepth 1 -name '*.json' -printf '%f\n' | sed 's/\.json$//' | sort)
-  for ((s = 0; s < SHARDS; s++)); do
-    ARGS=()
-    for i in "${!DOMS[@]}"; do (( i % SHARDS == s )) && ARGS+=(--domain "${DOMS[$i]}"); done
-    (( ${#ARGS[@]} )) || continue
-    # shellcheck disable=SC2086
-    timeout "$SHARD_TIMEOUT_S" python benchmark_runner.py --capability_id "$C" "${ARGS[@]}" \
-      --max-samples-per-domain "$N" --provider "$PROVIDER" --model "$MODEL" --temperature "$TEMPERATURE" \
-      --output "$RUN/cap$C" $RUNNER_ARGS > "$RUN/logs/cap${C}_s$s.log" 2>&1 &
-    PIDS+=($!); LABELS+=("cap${C}_s$s")
-  done
-done
 agent_failures=0
-for i in "${!PIDS[@]}"; do
-  if ! wait "${PIDS[$i]}"; then
-    echo "WARN: shard ${LABELS[$i]} exited non-zero (see $RUN/logs/${LABELS[$i]}.log)" >&2
-    agent_failures=$((agent_failures + 1))
-  fi
-done
+run_agents_queue() {
+  # One job per (capability, domain), largest first, PARALLEL slots in total.
+  local C d n jobs="$RUN/logs/agent_jobs.tsv"
+  : > "$jobs"
+  for C in $CAPS; do
+    for d in "$GT_ROOT/${DIRS[$C]}/input"/*.json; do
+      n=$(python -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$d")
+      printf '%s\t%s\t%s\n' "$n" "$C" "$(basename "$d" .json)" >> "$jobs"
+    done
+  done
+  sort -t$'\t' -k1,1nr -o "$jobs" "$jobs"
+  export RUN SHARD_TIMEOUT_S PROVIDER MODEL TEMPERATURE RUNNER_ARGS
+  export N_ARGS_STR="${N_ARGS[*]:-}"
+  # shellcheck disable=SC2016
+  cut -f2,3 "$jobs" | xargs -P "$PARALLEL" -L1 bash -c '
+    C=$0 d=$1
+    # shellcheck disable=SC2086
+    timeout "$SHARD_TIMEOUT_S" python benchmark_runner.py --capability_id "$C" --domain "$d" \
+      $N_ARGS_STR --provider "$PROVIDER" --model "$MODEL" --temperature "$TEMPERATURE" \
+      --output "$RUN/cap$C" $RUNNER_ARGS > "$RUN/logs/cap${C}_$d.log" 2>&1 \
+      || { echo "WARN: job cap$C/$d exited $? (see $RUN/logs/cap${C}_$d.log)" >&2; exit 1; }
+  ' || agent_failures=1
+}
+if (( PARALLEL > 0 )); then
+  run_agents_queue
+else
+  declare -a PIDS=() LABELS=()
+  for C in $CAPS; do
+    mapfile -t DOMS < <(find "$GT_ROOT/${DIRS[$C]}/input" -maxdepth 1 -name '*.json' -printf '%f\n' | sed 's/\.json$//' | sort)
+    for ((s = 0; s < SHARDS; s++)); do
+      ARGS=()
+      for i in "${!DOMS[@]}"; do (( i % SHARDS == s )) && ARGS+=(--domain "${DOMS[$i]}"); done
+      (( ${#ARGS[@]} )) || continue
+      # shellcheck disable=SC2086
+      timeout "$SHARD_TIMEOUT_S" python benchmark_runner.py --capability_id "$C" "${ARGS[@]}" \
+        "${N_ARGS[@]}" --provider "$PROVIDER" --model "$MODEL" --temperature "$TEMPERATURE" \
+        --output "$RUN/cap$C" $RUNNER_ARGS > "$RUN/logs/cap${C}_s$s.log" 2>&1 &
+      PIDS+=($!); LABELS+=("cap${C}_s$s")
+    done
+  done
+  for i in "${!PIDS[@]}"; do
+    if ! wait "${PIDS[$i]}"; then
+      echo "WARN: shard ${LABELS[$i]} exited non-zero (see $RUN/logs/${LABELS[$i]}.log)" >&2
+      agent_failures=$((agent_failures + 1))
+    fi
+  done
+fi
 manifest mark --run-dir "$RUN" --event agents_finished --exit-code "$agent_failures"
 
 # ---- evaluator: sequential by default --------------------------------------
