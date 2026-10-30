@@ -18,9 +18,20 @@
 # (capability, domain), largest domains first, with p running at once across all
 # capabilities; use it for full-split runs, where domain sizes vary 1-150 tasks.
 #
+# PARALLEL_CAP="2=6" gives a capability its own queue with that many slots; the
+# other capabilities share the PARALLEL slots. Capability 2's REST server is a
+# single uvicorn worker, and 23 concurrent cap2 domains overloaded it in the B0
+# full run (30 s tool-call timeouts for hours).
+#
+# TOOL_HEALTH=1 (default) checks the capability's container REST server
+# (GET /openapi.json inside the container) before each agent and evaluator job
+# and waits up to TOOL_HEALTH_WAIT_S for it; a job whose server never recovers
+# fails instead of recording tool timeouts as agent errors.
+#
 # SKIP_AGENTS=1 with RUN_ID=<existing run> re-scores existing predictions.
 # EVAL_JOBS=p runs one evaluator per (capability, domain), p at a time, and merges
-# the parts into eval/cap<C>.json (capstone/run/merge_eval.py). Otherwise
+# the parts into eval/cap<C>.json (capstone/run/merge_eval.py); a failed part is
+# retried up to EVAL_RETRIES times (default 3). Otherwise
 # evaluators run one capability at a time by default: concurrent evaluators
 # start competing MCP sessions against the same containers and corrupted
 # results in earlier runs. Set EVAL_PARALLEL=1 only if you know they are isolated.
@@ -53,6 +64,7 @@ load_config
 : "${VENV:=}" "${EXCLUDE_UUIDS:=}" "${JUDGE_BACKEND:=groq}" "${JUDGE_ENDPOINT:=}" "${JUDGE_MODEL:=}"
 : "${PARALLEL:=0}" "${EVAL_JOBS:=0}" "${SKIP_AGENTS:=0}" "${EVAL_PARALLEL:=0}" "${TRACING:=0}" "${PHOENIX_COLLECTOR_ENDPOINT:=http://127.0.0.1:6006}"
 : "${PHOENIX_PROJECT_NAME:=vakra-capstone}" "${VLLM_FLAGS:=}" "${ANALYZE:=1}"
+: "${PARALLEL_CAP:=}" "${TOOL_HEALTH:=1}" "${TOOL_HEALTH_WAIT_S:=900}" "${EVAL_RETRIES:=3}"
 
 if [[ -n "$VENV" ]]; then
   # shellcheck disable=SC1091
@@ -80,6 +92,23 @@ fi
 
 declare -A DIRS=([1]=capability_1_bi_apis [2]=capability_2_dashboard_apis [3]=capability_3_multihop_reasoning [4]=capability_4_multiturn)
 declare -A NAMES=([1]=capability_bi_apis [2]=capability_dashboard_apis [3]=capability_multihop_reasoning [4]=capability_multiturn)
+
+# wait_tool_server C: block until capability C's container REST server answers
+# /openapi.json with 200, or fail after TOOL_HEALTH_WAIT_S. Exported for xargs jobs.
+wait_tool_server() {
+  local container=$1 code waited=0
+  [[ "$TOOL_HEALTH" == 1 ]] || return 0
+  while :; do
+    code=$(docker exec "$container" curl -s -m 30 -o /dev/null -w '%{http_code}' \
+      http://localhost:8000/openapi.json 2>/dev/null) || code=000
+    [[ "$code" == 200 ]] && return 0
+    (( waited >= TOOL_HEALTH_WAIT_S )) && { echo "ERROR: $container REST unhealthy ($code) for ${waited}s" >&2; return 1; }
+    echo "WARN: $container REST unhealthy ($code), waiting" >&2
+    sleep 30; waited=$((waited + 30))
+  done
+}
+export -f wait_tool_server
+export TOOL_HEALTH TOOL_HEALTH_WAIT_S
 
 [[ "$N" == all ]] && N=0
 N_ARGS=(); (( N > 0 )) && N_ARGS=(--max-samples-per-domain "$N")
@@ -134,15 +163,31 @@ run_agents_queue() {
   sort -t$'\t' -k1,1nr -o "$jobs" "$jobs"
   export RUN SHARD_TIMEOUT_S PROVIDER MODEL TEMPERATURE RUNNER_ARGS
   export N_ARGS_STR="${N_ARGS[*]:-}"
+  local dir_map="" kv own="" queue_pids=() shared_caps=" $CAPS "
+  for C in $CAPS; do dir_map+="$C=${DIRS[$C]} "; done
+  export AGENT_DIR_MAP="$dir_map"
   # shellcheck disable=SC2016
-  cut -f2,3 "$jobs" | xargs -P "$PARALLEL" -L1 bash -c '
+  local job='
     C=$0 d=$1
+    for kv in $AGENT_DIR_MAP; do [[ ${kv%%=*} == "$C" ]] && container=${kv#*=}; done
+    wait_tool_server "$container" || { echo "WARN: job cap$C/$d skipped: tool server unhealthy" >&2; exit 1; }
     # shellcheck disable=SC2086
     timeout "$SHARD_TIMEOUT_S" python benchmark_runner.py --capability_id "$C" --domain "$d" \
       $N_ARGS_STR --provider "$PROVIDER" --model "$MODEL" --temperature "$TEMPERATURE" \
       --output "$RUN/cap$C" $RUNNER_ARGS > "$RUN/logs/cap${C}_$d.log" 2>&1 \
       || { echo "WARN: job cap$C/$d exited $? (see $RUN/logs/cap${C}_$d.log)" >&2; exit 1; }
-  ' || agent_failures=1
+  '
+  # Capabilities listed in PARALLEL_CAP get their own queue; the rest share PARALLEL slots.
+  for kv in $PARALLEL_CAP; do
+    C=${kv%%=*}
+    [[ "$shared_caps" == *" $C "* ]] || continue
+    shared_caps=${shared_caps/ $C / }
+    awk -F'\t' -v c="$C" '$2 == c { print $2 "\t" $3 }' "$jobs" | xargs -P "${kv#*=}" -L1 bash -c "$job" &
+    queue_pids+=($!)
+  done
+  awk -F'\t' -v caps="$shared_caps" 'index(caps, " " $2 " ") { print $2 "\t" $3 }' "$jobs" \
+    | xargs -r -P "$PARALLEL" -L1 bash -c "$job" || agent_failures=1
+  for own in "${queue_pids[@]}"; do wait "$own" || agent_failures=1; done
 }
 if [[ "$SKIP_AGENTS" == 1 ]]; then
   echo "SKIP_AGENTS=1: scoring existing predictions in $RUN/cap*" >&2
@@ -197,16 +242,23 @@ run_eval_queue() {
   export RUN GT_ROOT MCP_CONFIG
   local name_map="" dir_map=""
   for C in $CAPS; do name_map+="$C=${NAMES[$C]} "; dir_map+="$C=${DIRS[$C]} "; done
-  export EVAL_NAME_MAP="$name_map" EVAL_DIR_MAP="$dir_map"
+  export EVAL_NAME_MAP="$name_map" EVAL_DIR_MAP="$dir_map" EVAL_RETRIES
+  # Each part is retried: the evaluator replays tool calls against the live
+  # servers, and transient MCP/REST read timeouts otherwise drop whole domains.
   # shellcheck disable=SC2016
   cut -f2,3 "$jobs" | xargs -P "$EVAL_JOBS" -L1 bash -c '
-    C=$0 d=$1
+    C=$0 d=$1 out="$RUN/eval/parts/cap$C/$d.json" log="$RUN/logs/eval_cap${C}_$d.log"
     for kv in $EVAL_NAME_MAP; do [[ ${kv%%=*} == "$C" ]] && name=${kv#*=}; done
     for kv in $EVAL_DIR_MAP; do [[ ${kv%%=*} == "$C" ]] && dir=${kv#*=}; done
-    python evaluator/evaluator.py --capability_name "$name" --gt_root "$GT_ROOT/$dir/output" \
-      --pred_root "$RUN/cap$C" --output "$RUN/eval/parts/cap$C/$d.json" --mcp-config "$MCP_CONFIG" \
-      --domains "$d" > "$RUN/logs/eval_cap${C}_$d.log" 2>&1 \
-      || { echo "WARN: evaluator cap$C/$d failed (see $RUN/logs/eval_cap${C}_$d.log)" >&2; exit 1; }
+    for ((attempt = 1; attempt <= EVAL_RETRIES; attempt++)); do
+      wait_tool_server "$dir" || break
+      python evaluator/evaluator.py --capability_name "$name" --gt_root "$GT_ROOT/$dir/output" \
+        --pred_root "$RUN/cap$C" --output "$out" --mcp-config "$MCP_CONFIG" \
+        --domains "$d" > "$log" 2>&1 && [[ -s "$out" ]] && exit 0
+      echo "WARN: evaluator cap$C/$d attempt $attempt failed (see $log)" >&2
+      (( attempt < EVAL_RETRIES )) && sleep 20
+    done
+    echo "WARN: evaluator cap$C/$d failed after $EVAL_RETRIES attempts" >&2; exit 1
   ' || eval_failures=$((eval_failures + 1))
   for C in $CAPS; do
     [[ -d "$RUN/eval/parts/cap$C" ]] || continue
