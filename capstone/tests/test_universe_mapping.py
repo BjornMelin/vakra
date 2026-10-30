@@ -22,9 +22,9 @@ def _item(uuid: str, tool: str) -> dict:
     return {
         "uuid": uuid,
         "domain": "books",
-        "turns": [{"query": f"q-{uuid}"}],
         "output": [
             {
+                "query": f"q-{uuid}",
                 "sequence": {
                     "tool_call": [
                         {
