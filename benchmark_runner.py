@@ -52,6 +52,7 @@ Output:
   e.g. output/capability_2_feb_18_11_21am/hockey.json
 """
 import os
+import sys
 import asyncio
 from contextlib import AsyncExitStack
 import json
@@ -402,6 +403,10 @@ def _get_agent(capability_id: int, llm, tools, top_k_tools: int = 0, max_iterati
     return LangGraphReActAgent(**kwargs)
 
 
+class IncompleteRunError(RuntimeError):
+    """A domain returned fewer results than it has items, so its output was not written."""
+
+
 async def run_capability(
     capability_id: int,
     cfg: MCPConnectionConfig,
@@ -458,6 +463,7 @@ async def run_capability(
 
     # Process each domain, writing output incrementally
     all_results: List[BenchmarkResult] = []
+    incomplete: List[str] = []
     for domain in domain_list:
         items = items_by_domain[domain]
         tlog(f"\nLoaded {len(items)} items for domain '{domain}'")
@@ -474,6 +480,13 @@ async def run_capability(
             tlog=tlog,
         )
         all_results.extend(domain_results)
+        expected = min(len(items), max_samples_per_domain) if max_samples_per_domain else len(items)
+        if len(domain_results) < expected:
+            # Usually the MCP server failed to start (e.g. the OpenAPI spec fetch timed out). Writing
+            # the partial file would make resume skip this domain, so leave it out and fail the run.
+            tlog(f"  ERROR: domain '{domain}' produced {len(domain_results)}/{expected} results; output not written")
+            incomplete.append(domain)
+            continue
         save_results_ground_truth(domain_results, out_dir)
         save_tools_log(domain_results, out_dir)
 
@@ -490,8 +503,12 @@ async def run_capability(
     tlog(f"  Successful: {len(successful)}")
     tlog(f"  Failed: {len(failed)}")
     tlog(f"  Log file: {out_dir / 'run.log'}")
+    if incomplete:
+        tlog(f"  Incomplete domains (not written): {incomplete}")
     tlog.close()
 
+    if incomplete:
+        raise IncompleteRunError(f"capability {capability_id}: incomplete domains {incomplete}")
     return results
 
 
@@ -681,13 +698,19 @@ def main():
     async def _run_all():
         coros = [_make_run_task_coro(tid) for tid in capability_ids]
         if args.parallel and len(coros) > 1:
-            await asyncio.gather(*coros)
+            outcomes = await asyncio.gather(*coros, return_exceptions=True)
+            errors = [o for o in outcomes if isinstance(o, BaseException)]
+            if errors:
+                raise errors[0]
         else:
             for c in coros:
                 await c
 
     try:
         asyncio.run(_run_all())
+    except IncompleteRunError as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
     finally:
         capstone_tracing.shutdown_tracing()
 
