@@ -1,0 +1,19 @@
+{
+  "derivations": "count",
+  "allow_query_values": true,
+  "names_missing": "judge",
+  "accept_abstentions": true,
+  "on_reject": "flag",
+  "on_insufficient": "flag",
+  "abstain_text": "I could not verify an answer from the tool outputs.",
+  "judge": {
+    "enabled": true,
+    "endpoint": null,
+    "model": null,
+    "api_key_env": "API_KEY",
+    "temperature": 0.0,
+    "max_tokens": 512,
+    "timeout_s": 60.0,
+    "max_evidence_chars": 12000
+  }
+}
