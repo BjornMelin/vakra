@@ -230,6 +230,7 @@ def build_start_manifest(
         "max_samples_per_domain": args.n,
         "shards": args.shards,
         "parallel_jobs": getattr(args, "parallel", None),
+        "eval_jobs": getattr(args, "eval_jobs", None),
         "tasks_planned": json.loads(args.task_counts)
         if getattr(args, "task_counts", None)
         else None,
@@ -329,6 +330,9 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--shards", type=int)
     s.add_argument(
         "--parallel", type=int, help="global agent job slots (queue mode)"
+    )
+    s.add_argument(
+        "--eval-jobs", type=int, help="per-domain evaluator slots (0 = per capability)"
     )
     s.add_argument(
         "--task-counts", help='JSON {"<cap>": <tasks selected>} for this run'

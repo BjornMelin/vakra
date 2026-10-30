@@ -18,7 +18,10 @@
 # (capability, domain), largest domains first, with p running at once across all
 # capabilities; use it for full-split runs, where domain sizes vary 1-150 tasks.
 #
-# Evaluators run one capability at a time by default: concurrent evaluators
+# SKIP_AGENTS=1 with RUN_ID=<existing run> re-scores existing predictions.
+# EVAL_JOBS=p runs one evaluator per (capability, domain), p at a time, and merges
+# the parts into eval/cap<C>.json (capstone/run/merge_eval.py). Otherwise
+# evaluators run one capability at a time by default: concurrent evaluators
 # start competing MCP sessions against the same containers and corrupted
 # results in earlier runs. Set EVAL_PARALLEL=1 only if you know they are isolated.
 set -euo pipefail
@@ -48,7 +51,7 @@ load_config
 : "${N:=2}" "${SHARDS:=8}" "${CAPS:=1 2 3 4}" "${SHARD_TIMEOUT_S:=1200}" "${AGENT_TIMEOUT_SECONDS:=300}"
 : "${RUNNER_ARGS:=}" "${RUN_ROOT:=runs}" "${GT_ROOT:=data/train}" "${MCP_CONFIG:=benchmark/mcp_connection_config.yaml}"
 : "${VENV:=}" "${EXCLUDE_UUIDS:=}" "${JUDGE_BACKEND:=groq}" "${JUDGE_ENDPOINT:=}" "${JUDGE_MODEL:=}"
-: "${PARALLEL:=0}" "${EVAL_PARALLEL:=0}" "${TRACING:=0}" "${PHOENIX_COLLECTOR_ENDPOINT:=http://127.0.0.1:6006}"
+: "${PARALLEL:=0}" "${EVAL_JOBS:=0}" "${SKIP_AGENTS:=0}" "${EVAL_PARALLEL:=0}" "${TRACING:=0}" "${PHOENIX_COLLECTOR_ENDPOINT:=http://127.0.0.1:6006}"
 : "${PHOENIX_PROJECT_NAME:=vakra-capstone}" "${VLLM_FLAGS:=}" "${ANALYZE:=1}"
 
 if [[ -n "$VENV" ]]; then
@@ -98,11 +101,15 @@ PY
 
 manifest() { python -m capstone.run.manifest "$@"; }
 eval_flag=(); [[ "$EVAL_PARALLEL" == 1 ]] && eval_flag=(--eval-parallel)
-# shellcheck disable=SC2086
-manifest start --run-dir "$RUN" --run-id "$RUN_ID" --variant "$VARIANT" --model "$MODEL" \
-  --provider "$PROVIDER" --temperature "$TEMPERATURE" ${REASONING_EFFORT:+--reasoning-effort "$REASONING_EFFORT"} \
-  ${N_ARGS:+--n "$N"} --shards "$SHARDS" --parallel "$PARALLEL" --task-counts "$task_counts" --capabilities $CAPS --shard-timeout "$SHARD_TIMEOUT_S" \
-  --runner-args "$RUNNER_ARGS" --config-file "$CONFIG_FILE" --vllm-flags "$VLLM_FLAGS" "${eval_flag[@]}"
+if [[ "$SKIP_AGENTS" == 1 && -f "$RUN/config.json" ]]; then
+  manifest mark --run-dir "$RUN" --event rescore_started
+else
+  # shellcheck disable=SC2086
+  manifest start --run-dir "$RUN" --run-id "$RUN_ID" --variant "$VARIANT" --model "$MODEL" \
+    --provider "$PROVIDER" --temperature "$TEMPERATURE" ${REASONING_EFFORT:+--reasoning-effort "$REASONING_EFFORT"} \
+    ${N_ARGS:+--n "$N"} --shards "$SHARDS" --parallel "$PARALLEL" --eval-jobs "$EVAL_JOBS" --task-counts "$task_counts" --capabilities $CAPS --shard-timeout "$SHARD_TIMEOUT_S" \
+    --runner-args "$RUNNER_ARGS" --config-file "$CONFIG_FILE" --vllm-flags "$VLLM_FLAGS" "${eval_flag[@]}"
+fi
 
 on_interrupt() {
   manifest finish --run-dir "$RUN" --status interrupted >/dev/null 2>&1 || true
@@ -137,7 +144,9 @@ run_agents_queue() {
       || { echo "WARN: job cap$C/$d exited $? (see $RUN/logs/cap${C}_$d.log)" >&2; exit 1; }
   ' || agent_failures=1
 }
-if (( PARALLEL > 0 )); then
+if [[ "$SKIP_AGENTS" == 1 ]]; then
+  echo "SKIP_AGENTS=1: scoring existing predictions in $RUN/cap*" >&2
+elif (( PARALLEL > 0 )); then
   run_agents_queue
 else
   declare -a PIDS=() LABELS=()
@@ -172,7 +181,42 @@ run_eval() {
     > "$RUN/logs/eval_cap$C.log" 2>&1
 }
 eval_failures=0
-if [[ "$EVAL_PARALLEL" == 1 ]]; then
+run_eval_queue() {
+  # One evaluator per (capability, domain) with predictions, EVAL_JOBS at once,
+  # largest first; then merge per capability with the evaluator's summary code.
+  local C d jobs="$RUN/logs/eval_jobs.tsv"
+  : > "$jobs"
+  for C in $CAPS; do
+    [[ -d "$RUN/cap$C" ]] || { echo "WARN: no predictions for cap$C" >&2; eval_failures=$((eval_failures + 1)); continue; }
+    mkdir -p "$RUN/eval/parts/cap$C"
+    for d in "$GT_ROOT/${DIRS[$C]}/output"/*.json; do
+      printf '%s\t%s\t%s\n' "$(stat -c %s "$d")" "$C" "$(basename "$d" .json)" >> "$jobs"
+    done
+  done
+  sort -t$'\t' -k1,1nr -o "$jobs" "$jobs"
+  export RUN GT_ROOT MCP_CONFIG
+  local name_map="" dir_map=""
+  for C in $CAPS; do name_map+="$C=${NAMES[$C]} "; dir_map+="$C=${DIRS[$C]} "; done
+  export EVAL_NAME_MAP="$name_map" EVAL_DIR_MAP="$dir_map"
+  # shellcheck disable=SC2016
+  cut -f2,3 "$jobs" | xargs -P "$EVAL_JOBS" -L1 bash -c '
+    C=$0 d=$1
+    for kv in $EVAL_NAME_MAP; do [[ ${kv%%=*} == "$C" ]] && name=${kv#*=}; done
+    for kv in $EVAL_DIR_MAP; do [[ ${kv%%=*} == "$C" ]] && dir=${kv#*=}; done
+    python evaluator/evaluator.py --capability_name "$name" --gt_root "$GT_ROOT/$dir/output" \
+      --pred_root "$RUN/cap$C" --output "$RUN/eval/parts/cap$C/$d.json" --mcp-config "$MCP_CONFIG" \
+      --domains "$d" > "$RUN/logs/eval_cap${C}_$d.log" 2>&1 \
+      || { echo "WARN: evaluator cap$C/$d failed (see $RUN/logs/eval_cap${C}_$d.log)" >&2; exit 1; }
+  ' || eval_failures=$((eval_failures + 1))
+  for C in $CAPS; do
+    [[ -d "$RUN/eval/parts/cap$C" ]] || continue
+    python -m capstone.run.merge_eval --parts "$RUN/eval/parts/cap$C" --out "$RUN/eval/cap$C.json" \
+      || eval_failures=$((eval_failures + 1))
+  done
+}
+if (( EVAL_JOBS > 0 )); then
+  run_eval_queue
+elif [[ "$EVAL_PARALLEL" == 1 ]]; then
   declare -a EPIDS=()
   for C in $CAPS; do run_eval "$C" & EPIDS+=($!); done
   for p in "${EPIDS[@]}"; do wait "$p" || eval_failures=$((eval_failures + 1)); done
