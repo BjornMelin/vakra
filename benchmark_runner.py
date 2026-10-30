@@ -100,10 +100,15 @@ def _setup_phoenix(endpoint: str, project_name: str = "enterprise-benchmark") ->
         return False
 
 
+# VAKRA_LOG_LEVEL (default DEBUG) sets the runner's log level. DEBUG logs every
+# LiteLLM request body, which is several GB for a full-split run; INFO keeps the
+# per-task status lines and server logs.
+LOG_LEVEL = os.environ.get("VAKRA_LOG_LEVEL", "DEBUG").upper()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=LOG_LEVEL,
     format="%(asctime)s %(levelname)-8s %(name)s: %(message)s",
 )
+logging.getLogger("LiteLLM").setLevel(LOG_LEVEL)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)                                         
 logging.getLogger("langchain").setLevel(logging.WARNING)                                      
