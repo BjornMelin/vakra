@@ -7,6 +7,10 @@ rebuilds ``eval/cap<C>.json`` with the same summary fields the evaluator writes
 what one sequential evaluator run writes.
 
     python -m capstone.run.merge_eval --parts eval/parts/cap1 --out eval/cap1.json
+
+Exits 2 when any domain has ground-truth items without a prediction. The
+evaluator skips a domain already present in its output file, so a part written
+while the domain had no predictions stays at 0 paired until it is deleted.
 """
 
 from __future__ import annotations
@@ -67,12 +71,18 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--parts", required=True, type=Path)
     ap.add_argument("--out", required=True, type=Path)
+    ap.add_argument("--allow-missing", action="store_true",
+                    help="exit 0 even when some ground-truth items have no prediction")
     args = ap.parse_args(argv)
     result = merge(args.parts, args.out)
     s = result["summary"]
     print(f"{args.out}: {s['n_domains']} domains, {s['n_samples']} samples, "
           f"accuracy {s['mean_dialogue_score']:.4f}")
-    return 0
+    incomplete = {d: len(o["missing_prediction_uuids"])
+                  for d, o in result["domains"].items() if o["missing_prediction_uuids"]}
+    for d, n in incomplete.items():
+        print(f"MISSING predictions: {d}: {n} (delete its part and re-evaluate)", file=sys.stderr)
+    return 2 if incomplete and not args.allow_missing else 0
 
 
 if __name__ == "__main__":
