@@ -104,6 +104,7 @@ class BenchmarkResult:
     initial_data: Optional[Any] = None  # Capability 1 get_data peek shown to the agent
     verification: Optional[Dict[str, Any]] = None  # Post-answer step verdict (B1+), see capstone.variants
     original_answer: Optional[str] = None  # Agent answer before a post-answer step replaced it
+    b2: Optional[Dict[str, Any]] = None  # B2 decision path; None for B0 and B1
 
     def trajectory_record(self) -> Dict[str, Any]:
         """This result as a trajectory sidecar record (capstone.trajectories)."""
@@ -121,6 +122,7 @@ class BenchmarkResult:
             tool_calls=self.tool_calls,
             initial_data=self.initial_data,
             verification=self.verification,
+            b2=self.b2,
         )
 
 

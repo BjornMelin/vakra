@@ -194,8 +194,20 @@ def run_a(tmp_path):
         },
         (1, "address"): {"v1": (1.0, RIGHT)},
     }
-    base = {"vakra.capability_id": 2, "vakra.uuid": "u1", "vakra.run_id": "A"}
+    base = {
+        "vakra.capability_id": 2,
+        "vakra.uuid": "u1",
+        "vakra.run_id": "A",
+        "trace_id": "trace-u1",
+    }
     spans = [
+        {
+            "name": "vakra.task",
+            "trace_id": "trace-u1",
+            "vakra.capability_id": 2,
+            "vakra.uuid": "u1",
+            "vakra.run_id": "A",
+        },
         {
             **base,
             "openinference.span.kind": "LLM",

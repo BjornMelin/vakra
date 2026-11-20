@@ -1,0 +1,29 @@
+{
+  "status": "UNFROZEN",
+  "note": "COMMENT ONLY. status UNFROZEN refuses to launch. The proposed object is not read as live settings. Set status to SET and set every live field explicitly. Do not copy proposed into the live fields without that status change. Session B's recovery is one attempt: set recovery_step_cap yourself; this file does not fill in 1.",
+  "proposed": {
+    "comment": "Not applied. Listed so the numbers are visible and cannot be mistaken for live defaults.",
+    "max_recovery_tool_calls": 3,
+    "max_recovery_llm_calls": 4,
+    "recovery_timeout_s": 300,
+    "max_resume_prompt_tokens": 65536,
+    "control_seed": 20261119,
+    "on_reject": "flag_keep_original",
+    "on_cap_hit": "flag_keep_original",
+    "on_error": "flag_keep_original",
+    "on_insufficient": "abstain"
+  },
+  "arm": null,
+  "recovery_step_cap": null,
+  "max_recovery_tool_calls": null,
+  "max_recovery_llm_calls": null,
+  "recovery_timeout_s": null,
+  "max_resume_prompt_tokens": null,
+  "prompt_token_count_method": null,
+  "control_seed": null,
+  "matched_trigger_count": null,
+  "on_reject": null,
+  "on_cap_hit": null,
+  "on_error": null,
+  "on_insufficient": null
+}

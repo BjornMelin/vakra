@@ -253,8 +253,10 @@ def test_manifest_b1_block():
 def test_variants():
     from capstone.variants import build_post_answer_step
 
+    from capstone.b2.config import B2ConfigError
+
     assert build_post_answer_step("B0") is None
-    with pytest.raises(NotImplementedError):
+    with pytest.raises(B2ConfigError, match="REFUSING TO LAUNCH"):
         build_post_answer_step("B2")
     with pytest.raises(ValueError):
         build_post_answer_step("B9")

@@ -71,10 +71,17 @@ load_config
 : "${PHOENIX_PROJECT_NAME:=vakra-capstone}" "${VLLM_FLAGS:=}" "${ANALYZE:=1}"
 : "${PARALLEL_CAP:=}" "${TOOL_HEALTH:=1}" "${TOOL_HEALTH_WAIT_S:=900}" "${EVAL_RETRIES:=3}"
 : "${VERIFIER_CONFIG:=}"
+: "${B2_CONFIG:=}" "${TASK_MANIFEST:=}" "${TASK_SUBSET:=}" "${RECURSION_LIMIT:=}"
 
 # The variant is a runner flag, so every benchmark_runner call below gets it.
+# Empty B2/manifest/recursion values add no flags, so B0 and B1 commands stay
+# the same when those variables are unset.
 VARIANT_ARGS="--variant $VARIANT"
 [[ -n "$VERIFIER_CONFIG" ]] && VARIANT_ARGS+=" --verifier-config $(realpath "$VERIFIER_CONFIG")"
+[[ -n "$B2_CONFIG" ]] && VARIANT_ARGS+=" --b2-config $(realpath "$B2_CONFIG")"
+[[ -n "$TASK_MANIFEST" ]] && VARIANT_ARGS+=" --task-manifest $(realpath "$TASK_MANIFEST")"
+[[ -n "$TASK_SUBSET" ]] && VARIANT_ARGS+=" --task-subset $(realpath "$TASK_SUBSET")"
+[[ -n "$RECURSION_LIMIT" ]] && VARIANT_ARGS+=" --recursion-limit $RECURSION_LIMIT"
 RUNNER_ARGS="$VARIANT_ARGS${RUNNER_ARGS:+ $RUNNER_ARGS}"
 
 if [[ -n "$VENV" ]]; then
@@ -150,7 +157,11 @@ else
     --provider "$PROVIDER" --temperature "$TEMPERATURE" ${REASONING_EFFORT:+--reasoning-effort "$REASONING_EFFORT"} \
     ${N_ARGS:+--n "$N"} --shards "$SHARDS" --parallel "$PARALLEL" --eval-jobs "$EVAL_JOBS" --task-counts "$task_counts" --capabilities $CAPS --shard-timeout "$SHARD_TIMEOUT_S" \
     --runner-args "$RUNNER_ARGS" --config-file "$CONFIG_FILE" --vllm-flags "$VLLM_FLAGS" "${eval_flag[@]}" \
-    ${VERIFIER_CONFIG:+--verifier-config "$VERIFIER_CONFIG"}
+    ${VERIFIER_CONFIG:+--verifier-config "$VERIFIER_CONFIG"} \
+    ${B2_CONFIG:+--b2-config "$B2_CONFIG"} \
+    ${TASK_MANIFEST:+--task-manifest "$TASK_MANIFEST"} \
+    ${TASK_SUBSET:+--task-subset "$TASK_SUBSET"} \
+    ${RECURSION_LIMIT:+--recursion-limit "$RECURSION_LIMIT"}
 fi
 
 on_interrupt() {

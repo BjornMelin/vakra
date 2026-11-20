@@ -40,6 +40,7 @@ from langchain_core.tools import StructuredTool
 from langgraph.prebuilt import create_react_agent
 
 from agents.components.tool_shortlister import ToolShortlister
+from agents.limits import graph_invocation_config
 from agents.llm import create_llm
 
 logger = logging.getLogger(__name__)
@@ -116,6 +117,7 @@ class LangGraphReActAgent(AgentInterface):
         top_k_tools: int = 0,
         initial_data_handle: str | None = None,
         max_iterations: int | None = None,
+        recursion_limit: int | None = None,
         **kwargs,
     ):
         """
@@ -133,10 +135,15 @@ class LangGraphReActAgent(AgentInterface):
             max_iterations: Maximum number of agent loop iterations. Maps to
                             LangGraph's recursion_limit (×2 + 1). None uses
                             LangGraph defaults.
+            recursion_limit: When set, passed through as LangGraph's
+                             recursion_limit. When unset along with
+                             max_iterations, the library default is left
+                             in place (see agents.limits).
         """
         self._llm = llm
         self._tools = tools or []
         self._max_iterations = max_iterations
+        self._recursion_limit = recursion_limit
 
         logger.debug(
             "Initializing LangGraphReActAgent: llm=%s, tools=%d, top_k_tools=%d, "
@@ -263,6 +270,8 @@ INITIAL DATA:
         self,
         input: Union[str, List[Message]],
         additional_instructions: str = None,
+        *,
+        recursion_limit: int | None = None,
     ) -> AgentResponse:
         """Run the ReAct agent with given input."""
         query_preview = input if isinstance(input, str) else next(
@@ -309,11 +318,13 @@ INITIAL DATA:
                 logger.debug("run: injecting handle-system system message")
                 lc_messages = [SystemMessage(content=self._build_system_message())] + lc_messages
 
-        # Build invocation config
-        config: RunnableConfig | None = None
-        if self._max_iterations is not None:
-            config = RunnableConfig(recursion_limit=self._max_iterations * 2 + 1)
-            logger.debug("run: recursion_limit=%d (max_iterations=%d)", self._max_iterations * 2 + 1, self._max_iterations)
+        # Build invocation config. Both limits unset -> config is None, which
+        # leaves LangGraph's library recursion_limit in place.
+        limit = self._recursion_limit if recursion_limit is None else recursion_limit
+        invoked = graph_invocation_config(self._max_iterations, limit)
+        config: RunnableConfig | None = RunnableConfig(**invoked) if invoked else None
+        if invoked:
+            logger.debug("run: recursion_limit=%s", invoked["recursion_limit"])
 
         # Run the agent
         logger.debug("run: invoking LangGraph agent with %d input messages", len(lc_messages))
