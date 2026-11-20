@@ -318,37 +318,50 @@ def _attach_ground_truth(items: Iterable[Item], gt_root: Path) -> None:
 
 
 def _attach_spans(items: dict[tuple[int, str], Item], trace_dir: Path) -> bool:
+    """Attach spans by the root ``vakra.task`` span's trace_id.
+
+    LLM spans in the Session A traces often have no ``vakra.*`` attributes.
+    The root task span does. Every span is attributed from that root, not
+    from its own capability and uuid tags.
+    """
     files = sorted(trace_dir.glob("spans-*.jsonl")) if trace_dir.is_dir() else []
     if not files:
         return False
+    spans = []
     for f in files:
         for line in f.read_text(encoding="utf-8").splitlines():
-            if not line.strip():
-                continue
-            span = json.loads(line)
-            cap, uuid = span.get("vakra.capability_id"), span.get("vakra.uuid")
-            it = items.get((int(cap), str(uuid))) if cap is not None and uuid else None
-            if it is None:
-                continue
-            kind = span.get("openinference.span.kind")
-            if kind == "LLM":
-                it.n_llm_calls = (it.n_llm_calls or 0) + 1
-                for attr, name in (
-                    ("llm.token_count.prompt", "prompt_tokens"),
-                    ("llm.token_count.completion", "completion_tokens"),
-                    ("llm.token_count.total", "total_tokens"),
-                ):
-                    if span.get(attr) is not None:
-                        setattr(it, name, (getattr(it, name) or 0) + int(span[attr]))
-            elif kind == "TOOL":
-                it.tool_spans.append(
-                    ToolSpan(
-                        name=str(span.get("tool.name") or span.get("name")),
-                        input=str(span.get("input.value") or ""),
-                        output=str(span.get("output.value") or ""),
-                        start_ns=int(span.get("start_ns") or 0),
-                    )
+            if line.strip():
+                spans.append(json.loads(line))
+    owner: dict[str, tuple[int, str]] = {}
+    for span in spans:
+        cap, uuid = span.get("vakra.capability_id"), span.get("vakra.uuid")
+        trace_id = span.get("trace_id")
+        if cap is not None and uuid and trace_id and span.get("name") == "vakra.task":
+            owner[trace_id] = (int(cap), str(uuid))
+    for span in spans:
+        key = owner.get(span.get("trace_id"))
+        it = items.get(key) if key else None
+        if it is None:
+            continue
+        kind = span.get("openinference.span.kind")
+        if kind == "LLM":
+            it.n_llm_calls = (it.n_llm_calls or 0) + 1
+            for attr, name in (
+                ("llm.token_count.prompt", "prompt_tokens"),
+                ("llm.token_count.completion", "completion_tokens"),
+                ("llm.token_count.total", "total_tokens"),
+            ):
+                if span.get(attr) is not None:
+                    setattr(it, name, (getattr(it, name) or 0) + int(span[attr]))
+        elif kind == "TOOL":
+            it.tool_spans.append(
+                ToolSpan(
+                    name=str(span.get("tool.name") or span.get("name")),
+                    input=str(span.get("input.value") or ""),
+                    output=str(span.get("output.value") or ""),
+                    start_ns=int(span.get("start_ns") or 0),
                 )
+            )
     for it in items.values():
         it.tool_spans.sort(key=lambda t: t.start_ns)
     return True
