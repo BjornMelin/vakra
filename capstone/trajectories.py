@@ -13,7 +13,8 @@ Record format (one per task)::
                                      #   in verification.answer_returned)
      "tool_calls": [{"name", "arguments", "result", "result_truncated"}],
      "initial_data": {...} | null,   # capability 1 get_data peek
-     "verification": {...} | null}   # B1 verdict (capstone.b1.verifier.Verdict)
+     "verification": {...} | null,  # B1 verdict (capstone.b1.verifier.Verdict)
+     "b2": {...} | absent}          # B2 decision; omitted for B0 and B1
 """
 
 from __future__ import annotations
@@ -93,9 +94,10 @@ def build_record(
     error: str = "",
     initial_data: Any = None,
     verification: Mapping[str, Any] | None = None,
+    b2: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One trajectory sidecar record (see module docstring)."""
-    return {
+    record = {
         "uuid": uuid,
         "domain": domain,
         "turn_id": turn_id,
@@ -108,6 +110,9 @@ def build_record(
         "initial_data": initial_data,
         "verification": dict(verification) if verification is not None else None,
     }
+    if b2 is not None:
+        record["b2"] = dict(b2)
+    return record
 
 
 def write_trajectories(records: Iterable[Mapping[str, Any]], path: Path) -> None:

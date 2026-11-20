@@ -65,6 +65,10 @@ ATTR_B1_PATH = "vakra.b1.path"
 ATTR_B1_REASON = "vakra.b1.reason"
 ATTR_B1_DURATION_S = "vakra.b1.duration_s"
 ATTR_B1_ACTION = "vakra.b1.action"
+ATTR_B2_TRIGGERED = "vakra.b2.triggered"
+ATTR_B2_RECOVERY_TOOL_CALLS = "vakra.b2.recovery_tool_calls"
+ATTR_B2_ANSWER_CHANGED = "vakra.b2.final_answer_changed"
+ATTR_B2_ABSTAINED = "vakra.b2.abstained"
 OI_SESSION_ID = "session.id"
 OI_SPAN_KIND = "openinference.span.kind"
 OI_INPUT_VALUE = "input.value"
@@ -251,6 +255,16 @@ class TaskSpan:
             ATTR_B1_ACTION: verdict.get("action"),
         }
         self._span.set_attributes({k: v for k, v in attrs.items() if v is not None})
+        b2 = verdict.get("b2")
+        if isinstance(b2, dict):
+            self._span.set_attributes(
+                {
+                    ATTR_B2_TRIGGERED: bool(b2.get("triggered")),
+                    ATTR_B2_RECOVERY_TOOL_CALLS: int(b2.get("n_recovery_tool_calls") or 0),
+                    ATTR_B2_ANSWER_CHANGED: bool(b2.get("final_answer_changed")),
+                    ATTR_B2_ABSTAINED: bool(b2.get("abstained")),
+                }
+            )
 
 
 @contextmanager
