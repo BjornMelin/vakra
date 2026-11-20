@@ -180,6 +180,7 @@ async def run_benchmark_for_domain(
     max_iterations: Optional[int] = None,
     tlog: CapabilityLogger = None,
     post_answer_step: Optional[PostAnswerStep] = None,
+    recursion_limit: Optional[int] = None,
 ) -> List[BenchmarkResult]:
     """Run benchmark for a single domain - starts MCP server once.
 
@@ -218,7 +219,13 @@ async def run_benchmark_for_domain(
         tools = await wrapper.get_tools()
         tlog(f"  Loaded {len(tools)} tools for domain '{domain}'")
 
-        agent = _get_agent(capability_id, llm, tools, top_k_tools, max_iterations)
+        agent = _get_agent(
+            capability_id, llm, tools, top_k_tools, max_iterations, recursion_limit
+        )
+        if getattr(post_answer_step, "variant", None) == "B2":
+            from capstone.b2.executor import AgentRecoveryExecutor
+
+            post_answer_step.bind_executor(AgentRecoveryExecutor(agent))
 
         get_data_tool = next(
             (t for t in tools if t.name == "get_data"), None
@@ -414,8 +421,16 @@ async def _apply_post_answer_step(
     Runs in a worker thread (the B1 judge call is blocking). The agent's own
     answer is kept in ``result.original_answer`` and the trajectory sidecar.
     """
-    verdict = await asyncio.to_thread(step, result.trajectory_record())
+    record = result.trajectory_record()
+    if getattr(step, "variant", None) == "B2":
+        verdict, decision = await step.decide(record)
+        result.b2 = decision
+    else:
+        verdict = await asyncio.to_thread(step, record)
+        decision = None
     result.verification = verdict.model_dump(mode="json")
+    if decision is not None:
+        result.verification["b2"] = decision
     result.original_answer = result.answer
     if verdict.answer_returned is not None:
         result.answer = verdict.answer_returned
@@ -425,13 +440,30 @@ async def _apply_post_answer_step(
         + (f" failed_field={verdict.failed_field!r}" if verdict.failed_field else "")
         + f" | action={verdict.action} | {verdict.duration_s:.3f}s"
     )
+    if decision is not None:
+        tlog(
+            "    B2:"
+            f" triggered={decision['triggered']}"
+            f" recovery_tool_calls={decision['n_recovery_tool_calls']}"
+            f" final_answer_changed={decision['final_answer_changed']}"
+            f" abstained={decision['abstained']}"
+        )
 
 
-def _get_agent(capability_id: int, llm, tools, top_k_tools: int = 0, max_iterations: Optional[int] = None) -> AgentInterface:
+def _get_agent(
+    capability_id: int,
+    llm,
+    tools,
+    top_k_tools: int = 0,
+    max_iterations: Optional[int] = None,
+    recursion_limit: Optional[int] = None,
+) -> AgentInterface:
     """Return the appropriate agent for the given capability_id."""
     kwargs = dict(llm=llm, tools=tools, top_k_tools=top_k_tools)
     if max_iterations is not None:
         kwargs["max_iterations"] = max_iterations
+    if recursion_limit is not None:
+        kwargs["recursion_limit"] = recursion_limit
     if capability_id == 1:
         kwargs["initial_data_handle"] = "placeholder"
     return LangGraphReActAgent(**kwargs)
@@ -455,9 +487,30 @@ async def run_capability(
     temperature: float = 0.0,
     variant: str = "B0",
     verifier_config: Optional[str] = None,
+    b2_config: Optional[str] = None,
+    task_manifest: Optional[str] = None,
+    task_subset: Optional[str] = None,
+    recursion_limit: Optional[int] = None,
 ) -> List[BenchmarkResult]:
     """Run benchmark for a given capability_id, iterating over all domain files."""
-    post_answer_step = build_post_answer_step(variant, verifier_config)
+    plan = None
+    if task_manifest or variant == "B2":
+        if not task_manifest:
+            from capstone.b2.config import B2ConfigError
+
+            raise B2ConfigError(
+                "B2 REFUSING TO LAUNCH: --task-manifest is required. "
+                "The verified 414-id list is the Session B input."
+            )
+        from capstone.session_b.manifest import load_run_plan
+
+        plan = load_run_plan(task_manifest, task_subset)
+    post_answer_step = build_post_answer_step(
+        variant,
+        verifier_config,
+        b2_config=b2_config,
+        task_ids=None if plan is None else sorted(plan.ids),
+    )
 
     all_items, _ = load_benchmark_data(capability_id=capability_id, domains=domains)
 
@@ -467,6 +520,23 @@ async def run_capability(
         items_by_domain.setdefault(item.domain, []).append(item)
 
     domain_list = sorted(items_by_domain)
+
+    if plan is not None:
+        if max_samples_per_domain:
+            from capstone.session_b.manifest import ManifestError
+
+            raise ManifestError(
+                "REFUSING TO RUN: --max-samples-per-domain cannot be combined "
+                "with an explicit task manifest. The manifest is the task set."
+            )
+        from capstone.session_b.manifest import select_for_capability
+
+        flat = [it for group in items_by_domain.values() for it in group]
+        selected = select_for_capability(flat, capability_id, plan)
+        items_by_domain = {}
+        for it in selected:
+            items_by_domain.setdefault(it.domain, []).append(it)
+        domain_list = sorted(items_by_domain)
 
     # Create output dir early so the log file lives alongside the results
     out_dir = make_output_dir(capability_id, output_dir)
@@ -519,6 +589,7 @@ async def run_capability(
             max_iterations=max_iterations,
             tlog=tlog,
             post_answer_step=post_answer_step,
+            recursion_limit=recursion_limit,
         )
         all_results.extend(domain_results)
         expected = min(len(items), max_samples_per_domain) if max_samples_per_domain else len(items)
@@ -624,7 +695,38 @@ def main():
         "--max-iterations",
         type=int,
         default=None,
-        help="Maximum agent iterations per query (default: 10 for task 1, provider default otherwise)"
+        help=(
+            "Maximum agent iterations per query. Unset leaves LangGraph's "
+            "recursion_limit at the library default. When set, recursion_limit "
+            "is max_iterations*2+1 unless --recursion-limit is also set."
+        ),
+    )
+    parser.add_argument(
+        "--recursion-limit",
+        type=int,
+        default=None,
+        help=(
+            "LangGraph recursion_limit. Unset leaves the library default "
+            "(B0/B1 behavior). See agents/limits.py."
+        ),
+    )
+    parser.add_argument(
+        "--b2-config",
+        type=str,
+        default=None,
+        help="B2 config JSON. Required for --variant B2. The shipped file is UNFROZEN.",
+    )
+    parser.add_argument(
+        "--task-manifest",
+        type=str,
+        default=None,
+        help="Verified Session B UUID membership JSON. Refuses on a hash or count mismatch.",
+    )
+    parser.add_argument(
+        "--task-subset",
+        type=str,
+        default=None,
+        help="Optional Q7 cap-hit UUID list. Every id must be in --task-manifest.",
     )
     parser.add_argument(
         "--restart",
@@ -732,6 +834,10 @@ def main():
             temperature=args.temperature,
             variant=args.variant,
             verifier_config=args.verifier_config,
+            b2_config=args.b2_config,
+            task_manifest=args.task_manifest,
+            task_subset=args.task_subset,
+            recursion_limit=args.recursion_limit,
         )
 
     def _make_list_tools_coro(tid: int):

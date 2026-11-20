@@ -242,6 +242,11 @@ def build_start_manifest(
         if env.get("AGENT_TIMEOUT_SECONDS")
         else None,
         "runner_args": args.runner_args,
+        "recursion_limit": getattr(args, "recursion_limit", None),
+        "b2": _b2_manifest(getattr(args, "b2_config", None)),
+        "task_manifest": _task_manifest(
+            getattr(args, "task_manifest", None), getattr(args, "task_subset", None)
+        ),
         "b1": b1_manifest(getattr(args, "verifier_config", None), env)
         if args.variant != "B0"
         else None,
@@ -266,6 +271,22 @@ def build_start_manifest(
         "events": [],
         "status": "running",
     }
+
+
+def _b2_manifest(path: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    from capstone.b2.config import B2Config
+
+    return B2Config.load(path).live_dict()
+
+
+def _task_manifest(path: str | None, subset: str | None) -> dict[str, Any] | None:
+    if not path:
+        return None
+    from capstone.session_b.manifest import load_run_plan
+
+    return load_run_plan(path, subset).as_dict()
 
 
 def b1_manifest(verifier_config: str | None, env: dict[str, str]) -> dict[str, Any]:
@@ -366,6 +387,10 @@ def _parser() -> argparse.ArgumentParser:
     s.add_argument("--eval-parallel", action="store_true")
     s.add_argument("--config-file")
     s.add_argument("--verifier-config", help="B1 verifier config JSON (variant B1+)")
+    s.add_argument("--b2-config", help="B2 config JSON; UNFROZEN refuses to start")
+    s.add_argument("--task-manifest", help="Session B verified UUID membership")
+    s.add_argument("--task-subset", help="Optional Q7 UUID subset of the membership")
+    s.add_argument("--recursion-limit", type=int, help="LangGraph recursion_limit; omit for the library default")
     s.add_argument(
         "--vllm-flags", help="vLLM serve flags as configured (informational)"
     )
