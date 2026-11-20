@@ -21,6 +21,9 @@ def _run(monkeypatch, tmp_path, n_items, n_results):
     monkeypatch.setattr(br, "run_benchmark_for_domain", fake_domain)
     monkeypatch.setattr(br, "save_results_ground_truth", lambda res, out: saved.append(len(res)))
     monkeypatch.setattr(br, "save_tools_log", lambda res, out: None)
+    # The B1 runner also writes a trajectory sidecar. These fakes only carry
+    # status, so the sidecar writer is not what this test is checking.
+    monkeypatch.setattr(br, "save_trajectory_log", lambda res, out: None)
     coro = br.run_capability(capability_id=2, cfg=SimpleNamespace(mode="stdio", command=None, container_name="c"))
     return coro, saved
 
