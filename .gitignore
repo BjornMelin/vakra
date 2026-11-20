@@ -41,6 +41,11 @@ parlant-data/
 !helpers/data/
 !helpers/data/**
 
+# Session B verified task list (not train corpora)
+!capstone/data/
+!capstone/data/manifests/
+!capstone/data/manifests/**
+
 # But still ignore any __pycache__ inside helpers/data
 helpers/data/**/__pycache__/
 gpt-oss-120b*
