@@ -1,11 +1,11 @@
 """Session B task list.
 
-The verified 414-id file is the run input. Its SHA-256 and the per-capability
-counts are checked on load. A run must execute exactly the ids in that file,
-or exactly a Q7 subset file whose every id is in the 414. Ids in the train
-files that are not in the list are not executed. An id in the list that is
-not in the loaded tasks, or an id that would be executed but is not in the
-list, refuses the run.
+A run loads a registered membership file. The file name selects the recorded
+SHA-256 and the per-capability counts; both are checked on load. A run must
+execute exactly the ids in that file, or exactly a Q7 subset file whose every
+id is a member. Ids in the train files that are not in the plan are not
+executed. An id in the plan that is not in the loaded tasks, or an id that
+would be executed but is not in the plan, refuses the run.
 """
 
 from __future__ import annotations
@@ -26,10 +26,19 @@ DEFAULT_MEMBERSHIP = (
     / "manifests"
     / "verified-common-414-membership.json"
 )
+D6_EVAL_855_NAME = "d6-eval-855-membership.json"
+D6_EVAL_855_SHA256 = "a0b73f7082d953a4136aaa029acf3d474873c5a3b05dbcbfad05e141938100b4"
+D6_EVAL_855_COUNTS = {1: 322, 2: 264, 3: 133, 4: 136}
+
+# File name -> (recorded sha256, expected per-capability counts).
+MANIFEST_REGISTRY: dict[str, tuple[str, Mapping[int, int]]] = {
+    DEFAULT_MEMBERSHIP.name: (RECORDED_SHA256, EXPECTED_COUNTS),
+    D6_EVAL_855_NAME: (D6_EVAL_855_SHA256, D6_EVAL_855_COUNTS),
+}
 
 
 class ManifestError(RuntimeError):
-    """The task list is not the verified Session B input."""
+    """The task list is unregistered or does not match its recorded checks."""
 
 
 @dataclass(frozen=True)
@@ -135,7 +144,7 @@ def load_verified_414(path: str | Path | None = None) -> Membership:
 
 
 def read_subset(path: str | Path, membership: Membership) -> list[str]:
-    """Q7 cap-hit list. Every id must already be in the verified membership.
+    """Q7 cap-hit list. Every id must already be a member of ``membership``.
 
     Accepts a JSON list of strings, a JSON list of objects with ``uuid``,
     a JSON object with a ``uuids`` list, or one id per line.
@@ -153,7 +162,7 @@ def read_subset(path: str | Path, membership: Membership) -> list[str]:
         preview = ", ".join(extra[:10])
         raise ManifestError(
             "REFUSING TO RUN: subset has "
-            f"{len(extra)} uuid(s) that are not in the verified 414: {preview}."
+            f"{len(extra)} uuid(s) that are not in the registered manifest: {preview}."
         )
     if not ids:
         raise ManifestError(f"REFUSING TO RUN: subset {path} is empty.")
@@ -163,7 +172,20 @@ def read_subset(path: str | Path, membership: Membership) -> list[str]:
 def load_run_plan(
     membership_path: str | Path, subset_path: str | Path | None = None
 ) -> TaskPlan:
-    membership = load_verified_414(membership_path)
+    path = Path(membership_path)
+    registered = MANIFEST_REGISTRY.get(path.name)
+    if registered is None:
+        known = ", ".join(sorted(MANIFEST_REGISTRY))
+        raise ManifestError(
+            "REFUSING TO RUN: "
+            f"{path.name} is not in the manifest registry ({known})."
+        )
+    recorded_sha256, expected_counts = registered
+    membership = load_membership(
+        path,
+        recorded_sha256=recorded_sha256,
+        expected_counts=expected_counts,
+    )
     if subset_path is None:
         by_cap = membership.ids_by_capability
         ids = membership.ids

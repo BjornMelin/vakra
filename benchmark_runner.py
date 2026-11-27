@@ -500,7 +500,7 @@ async def run_capability(
 
             raise B2ConfigError(
                 "B2 REFUSING TO LAUNCH: --task-manifest is required. "
-                "The verified 414-id list is the Session B input."
+                "Pass a file from the Session B manifest registry."
             )
         from capstone.session_b.manifest import load_run_plan
 
@@ -720,7 +720,10 @@ def main():
         "--task-manifest",
         type=str,
         default=None,
-        help="Verified Session B UUID membership JSON. Refuses on a hash or count mismatch.",
+        help=(
+            "Registered Session B UUID membership JSON. The file name must be "
+            "in the manifest registry. Refuses on a hash or count mismatch."
+        ),
     )
     parser.add_argument(
         "--task-subset",
