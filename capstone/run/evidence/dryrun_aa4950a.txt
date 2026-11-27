@@ -1,0 +1,23 @@
+2026-11-27 23:03:30,849 DEBUG    asyncio: Using selector: EpollSelector
+2026-11-27 23:03:30,852 DEBUG    asyncio: Using selector: EpollSelector
+2026-11-27 23:03:30,852 DEBUG    asyncio: Using selector: EpollSelector
+--- load_run_plan, the function benchmark_runner.run_capability calls ---
+{
+  "counts": {
+    "1": 322,
+    "2": 264,
+    "3": 133,
+    "4": 136
+  },
+  "membership_path": "capstone/data/manifests/d6-eval-855-membership.json",
+  "membership_sha256": "a0b73f7082d953a4136aaa029acf3d474873c5a3b05dbcbfad05e141938100b4",
+  "n_ids": 855,
+  "subset_path": null
+}
+--- run_capability --variant B2 --task-manifest d6-eval-855-membership.json ---
+B2ConfigError: B2 REFUSING TO LAUNCH: capstone/run/configs/b2_unfrozen.json status is 'UNFROZEN', not 'SET'. UNFROZEN means the decision fields are unset. The 'proposed' object is a comment and is not applied.
+manifest accepted; launch stopped on the shipped UNFROZEN B2 config before any model endpoint
+--- run_capability with an unregistered file name ---
+ManifestError: REFUSING TO RUN: not-registered.json is not in the manifest registry (d6-eval-855-membership.json, verified-common-414-membership.json).
+--- run_capability with a one-byte edit of the 855 file ---
+ManifestError: REFUSING TO RUN: manifest sha256 cf61de0bea0653c07b1d8ec683ee610750ba7592148d28103454dd69e6ae224b != recorded a0b73f7082d953a4136aaa029acf3d474873c5a3b05dbcbfad05e141938100b4 (/tmp/tmp35an4k2_/d6-eval-855-membership.json).
